@@ -1,0 +1,8 @@
+jax
+jaxlib
+matplotlib
+numpy
+pytest
+scipy
+healpy
+jaxns
