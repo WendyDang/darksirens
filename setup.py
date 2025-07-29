@@ -1,7 +1,7 @@
 from setuptools import setup
 from setuptools import find_packages
 
-__minimum_jax_version__ = '0.2.9'
+__minimum_jax_version__ = '0.4.34'
 
 setup_requires = ['jax>=' + __minimum_jax_version__]
 
@@ -12,7 +12,7 @@ setuptools.setup(
     name="darksirens",
     version='0.0.1',
     author="Ignacio Magana Hernandez",
-    author_email="maganah2@uwm.edu",
+    author_email="imhernan@andrew.cmu.edu",
     description="A package for joint gravitational wave inference with large scale galaxy surveys.",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -34,5 +34,5 @@ setuptools.setup(
       "License :: OSI Approved :: Apache Software License",
       "Operating System :: OS Independent",
     ],
-    python_requires='>=3.9',
+    python_requires='>=3.11',
 )
