@@ -27,6 +27,7 @@ setuptools.setup(
     entry_points={
         "console_scripts": [
             "darksirens_inference=darksirens.inference.inference:main",
+            "darksirens_pixelate_survey=darksirens.em.pixelate_survey:main",
         ]
     },
     classifiers=[
