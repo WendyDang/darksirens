@@ -31,7 +31,7 @@ zgrid = np.concatenate([zgrid_1,zgrid_2])
 
 rs = []
 Om0grid = jnp.linspace(Om0Planck-0.1,Om0Planck+0.1,200)
-for Om0 in tqdm(Om0grid):
+for Om0 in Om0grid:
     cosmo = FlatLambdaCDM(H0=H0Planck,Om0=Om0)
     rs.append(cosmo.comoving_distance(zgrid).to(u.Mpc).value)
 

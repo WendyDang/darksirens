@@ -22,12 +22,14 @@ setuptools.setup(
         "darksirens",
         "darksirens.gw",
         "darksirens.em",
-        "darksirens.inference"
+        "darksirens.inference",
+        "darksirens.utils"
     ],
     entry_points={
         "console_scripts": [
             "darksirens_inference=darksirens.inference.inference:main",
             "darksirens_pixelate_survey=darksirens.em.pixelate_survey:main",
+            "darksirens_gwmock=darksirens.gw.mock_data:main",
         ]
     },
     classifiers=[
