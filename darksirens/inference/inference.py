@@ -29,6 +29,7 @@ import glob
 from darksirens.em.completeness import *
 from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
+from darksirens.inference.likelihood import *
 
 from darksirens.gw.utils import load_gw_samples
 from darksirens.em.utils import load_survey
@@ -157,8 +158,6 @@ def main():
 
         return logprob
 
-    seed = np.random.randint(1000)
-    key = jax.random.PRNGKey(1000)
 
     Om0 = Om0Planck
     beta = 0
