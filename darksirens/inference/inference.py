@@ -19,14 +19,20 @@ import astropy.constants as constants
 from jax.scipy.special import logsumexp
 from scipy.interpolate import interp1d
 from scipy.stats import gaussian_kde
+from jax.scipy.stats import norm
+
 from tqdm import tqdm
 
 from argparse import ArgumentParser
 import glob
 
+from darksirens.em.completeness import *
 from darksirens.utils.cosmology import *
+from darksirens.utils.utils import *
+
 from darksirens.gw.utils import load_gw_samples
 from darksirens.em.utils import load_survey
+from darksirens.gw.populations import log_p_pop_pl_pl
 
 import matplotlib
 
@@ -49,7 +55,6 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 
 
 def main():
-
     optp = ArgumentParser()
     optp.add_argument("--survey_path", help="path to survey pixelated data")
     optp.add_argument("--gw_path", help="path to gw data")
@@ -78,44 +83,6 @@ def main():
     samples_ind = hp.pixelfunc.ang2pix(nside,np.pi/2-dec,ra)
 
     @jit
-    def dV_of_z_normed(z,Om0,gamma):
-        dV = dV_of_z(zgrid,H0Planck,Om0)*(1+zgrid)**(gamma-1)
-        prob = dV/jnp.trapezoid(dV,zgrid)
-        return jnp.interp(z,zgrid,prob)
-
-    from jax.scipy.stats import norm
-
-    mass = jnp.linspace(1, 150, 2000)
-    mass_ratio =  jnp.linspace(0, 1, 2000)
-
-    @jit
-    def logpm1_peak(m1,mu,sigma):
-        pm1 =  jnp.exp(-(mass - mu)**2 / (2 * sigma ** 2))
-        pm1 = pm1/jnp.trapezoid(pm1,mass)
-        return jnp.log(jnp.interp(m1,mass,pm1))
-
-    @jit
-    def logfq(m1,m2,beta):
-        q = m2/m1
-        pq = mass_ratio**beta
-        pq = pq/jnp.trapezoid(pq,mass_ratio)
-
-        log_pq = jnp.log(jnp.interp(q,mass_ratio,pq))
-
-        return log_pq
-
-    @jit
-    def log_p_pop_pl_pl(m1,m2,mu,sigma,beta):
-        log_dNdm1 = logpm1_peak(m1,mu,sigma)
-        log_dNdm2 = logpm1_peak(m2,mu,sigma)
-        log_fq = logfq(m1,m2,beta)
-
-        return log_dNdm1 + log_dNdm2 + log_fq
-    @jit
-    def logdiffexp(x, y):
-        return x + jnp.log1p(jnp.exp(y-x))
-
-    @jit
     def Ngals_lessthanz(z,pix):
         Ngals = jnp.where((zgals[pix] < z), jnp.ones(len(zgals[pix])), 0).sum()
         return Ngals
@@ -133,7 +100,6 @@ def main():
         return Nexpected
 
     Ngals_expected_lessthanz_vmap = jit(vmap(Ngals_expected_lessthanz, in_axes=(0,None,None,None,None), out_axes=0))
-
 
     from jax.scipy.special import expit
 
