@@ -25,6 +25,8 @@ from argparse import ArgumentParser
 import glob
 
 from darksirens.utils.cosmology import *
+from darksirens.gw.utils import load_gw_samples
+from darksirens.em.utils import load_survey
 
 import matplotlib
 
@@ -53,7 +55,7 @@ def main():
     optp.add_argument("--gw_path", help="path to gw data")
     optp.add_argument("--save_path", help="where to save", default='./')
     optp.add_argument("--nsteps", type=int, default=1000)
-    #optp.add_argument("--nsamp", type=int, default=4096)
+    optp.add_argument("--nsamp", type=int, default=64)
     #optp.add_argument("--seed", type=int, default=22)
 
     opts = optp.parse_args()
@@ -62,41 +64,12 @@ def main():
     gw_path = opts.gw_path
     save_path = opts.save_path
     nsteps = opts.nsteps
-    #nsamp = opts.nsamp
+    nsamp = opts.nsamp
     #seed = opts.seed
     
-    with h5py.File(survey_path, 'r') as f:
-        nside = f.attrs['nside']
-        zgals = jnp.asarray(f['zgals'])
-        dzgals = 0.001*(1+zgals)
-        wgals = jnp.ones(zgals.shape)
-        ngals = jnp.asarray(f['ngals'])
+    nside, ngals, zgals, dzgals, wgals = load_survey(survey_path, dz=0.001)
         
-    with h5py.File(gw_path, 'r') as inp:
-        nsamps = inp.attrs['nsamp']
-        nEvents_ = inp.attrs['nobs']
-        ra = jnp.array(inp['ra'])
-        dec = jnp.array(inp['dec'])
-        m1det = jnp.array(inp['m1det'])
-        m2det = jnp.array(inp['m2det'])
-        dL = jnp.array((jnp.array(inp['dL'])*u.Mpc).value)
-
-
-    nsamp = 32
-    nEvents = 1000
-    ra = ra.reshape(nEvents_,nsamps)[0:nEvents,0:nsamp]
-    dec = dec.reshape(nEvents_,nsamps)[0:nEvents,0:nsamp]
-    m1det = m1det.reshape(nEvents_,nsamps)[0:nEvents,0:nsamp]
-    m2det = m2det.reshape(nEvents_,nsamps)[0:nEvents,0:nsamp]
-    dL = dL.reshape(nEvents_,nsamps)[0:nEvents,0:nsamp]
-    print(ra.shape)
-    ra = ra[0:nEvents].flatten()
-    dec = dec[0:nEvents].flatten()
-    m1det = m1det[0:nEvents].flatten()
-    m2det = m2det[0:nEvents].flatten()
-    dL = dL[0:nEvents].flatten()
-
-    p_pe = jnp.ones(len(dL))
+    ra, dec, m1det, m2det, dL, p_pe, nEvents = load_gw_samples(gw_path, nsamp=nsamp)
     
     npix = hp.pixelfunc.nside2npix(nside)
     apix = hp.pixelfunc.nside2pixarea(nside)
@@ -175,9 +148,9 @@ def main():
         Ngals = Ngals_lessthanz_vmap(zgrid,pix)
         ratio = Ngals/Nexpected
 
-        #ratio = jnp.where((ratio < 1), ratio, 0)
-        #ratio = jnp.where((ratio != 0), ratio, 1)
-        ratio *= Pcomplete0(zgrid,z1,z50)
+        ratio = jnp.where((ratio < 1), ratio, 0)
+        ratio = jnp.where((ratio != 0), ratio, 1)
+        #ratio = *Pcomplete0(zgrid,z1,z50)
         pvol = dV_of_z(zgrid, H0, Om0)*(1+zgrid)**(gamma-1)
 
         V = jnp.trapezoid(ratio*pvol,zgrid)
@@ -242,13 +215,13 @@ def main():
         return ll
 
     H0_lo = 20
-    H0_hi = 100
+    H0_hi = 80
 
     Om0_lo = Om0grid[0]
     Om0_hi = Om0grid[-1] 
 
-    gamma_lo = -30.0
-    gamma_hi = 30.0
+    gamma_lo = -5.0
+    gamma_hi = 5.0
 
     mu_lo = 20
     mu_hi = 50
