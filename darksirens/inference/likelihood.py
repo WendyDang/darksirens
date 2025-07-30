@@ -20,6 +20,8 @@ from jax.scipy.special import logsumexp
 from scipy.interpolate import interp1d
 from scipy.stats import gaussian_kde
 from jax.scipy.stats import norm
+from darksirens.gw.populations import log_p_pop_pl_pl
+from darksirens.em.completeness import logPriorUniverse
 
 from tqdm import tqdm
 
@@ -34,7 +36,7 @@ Om0 = Om0Planck
 beta = 0
 
 @jit
-def darksiren_log_likelihood(H0,log10n0,z1,z50,gamma,mu,sigma):
+def darksiren_log_likelihood(H0,log10n0,z1,z50,gamma,mu,sigma,m1det,m2det,dL,ra,dec,p_pe,samples_ind):
     n0 = 10**log10n0
 
     z = z_of_dL(dL, H0, Om0)

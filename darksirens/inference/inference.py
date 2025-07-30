@@ -26,14 +26,12 @@ from tqdm import tqdm
 from argparse import ArgumentParser
 import glob
 
-from darksirens.em.completeness import *
 from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
 from darksirens.inference.likelihood import *
 
 from darksirens.gw.utils import load_gw_samples
 from darksirens.em.utils import load_survey
-from darksirens.gw.populations import log_p_pop_pl_pl
 
 import matplotlib
 
@@ -83,102 +81,6 @@ def main():
     print(npix)
     samples_ind = hp.pixelfunc.ang2pix(nside,np.pi/2-dec,ra)
 
-    @jit
-    def Ngals_lessthanz(z,pix):
-        Ngals = jnp.where((zgals[pix] < z), jnp.ones(len(zgals[pix])), 0).sum()
-        return Ngals
-
-    Ngals_lessthanz_vmap = jit(vmap(Ngals_lessthanz, in_axes=(0,None), out_axes=0))
-
-
-    n0fid = 2e-4
-    gammafid = 1
-
-    @jit
-    def Ngals_expected_lessthanz(z,H0=H0Planck,Om0=Om0Planck,n0=n0fid,gamma=gammafid):
-        zz = jnp.expm1(jnp.linspace(jnp.log(1), jnp.log(z+1), 200))
-        Nexpected = jnp.trapezoid(n0*apix*dV_of_z(zz,H0,Om0)*(1+zz)**(gamma-1),zz)
-        return Nexpected
-
-    Ngals_expected_lessthanz_vmap = jit(vmap(Ngals_expected_lessthanz, in_axes=(0,None,None,None,None), out_axes=0))
-
-    from jax.scipy.special import expit
-
-    z50 = 0.50
-    z1=100
-    def Pcomplete0(z,z1,z50):
-        return expit(-z1*(z/z50)+z1)
-
-    @jit
-    def completeness_fraction(H0,Om0,n0,z1,z50,gamma,z,pix):
-        Nexpected = 1+Ngals_expected_lessthanz_vmap(zgrid,H0,Om0,n0,gamma)
-        Ngals = Ngals_lessthanz_vmap(zgrid,pix)
-        ratio = Ngals/Nexpected
-
-        ratio = jnp.where((ratio < 1), ratio, 0)
-        ratio = jnp.where((ratio != 0), ratio, 1)
-        #ratio = *Pcomplete0(zgrid,z1,z50)
-        pvol = dV_of_z(zgrid, H0, Om0)*(1+zgrid)**(gamma-1)
-
-        V = jnp.trapezoid(ratio*pvol,zgrid)
-        Vmax = jnp.trapezoid(pvol,zgrid)
-
-        pmiss = (1-ratio)*pvol
-        pmiss_normed = pmiss/jnp.trapezoid(pmiss,zgrid)
-
-        pmiss_z = jnp.interp(z,zgrid,pmiss_normed)
-
-        return V/Vmax, pmiss_z, ratio
-
-    completeness_fraction_vmap = jit(vmap(completeness_fraction, in_axes=(None,None,None,None,None,None,0,0), out_axes=0))
-
-    from jaxinterp2d import interp2d
-
-    @jit
-    def logpcatalog(z, pix, Om0, gamma):
-        zs = zgals[pix] 
-        ddzs = dzgals[pix]
-        wts = wgals[pix]*dV_of_z(zs,H0Planck,Om0)**(1+zs)**(gamma-1)
-        ngals = len(zs)
-        wts = wts/jnp.sum(wts)
-        return logsumexp(jnp.log(wts) + norm.logpdf(z,zs,ddzs))
-
-    logpcatalog_vmap = jit(vmap(logpcatalog, in_axes=(0,0,None,None), out_axes=0))
-
-
-    @jit
-    def logPriorUniverse(z,pix,H0,Om0,n0,z1,z50,gamma):
-        f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,gamma,z,pix)
-
-        logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
-
-        logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, gamma), -jnp.inf)
-
-        logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) #+ (gamma-1)*jnp.log1p(z)
-
-        return logprob
-
-
-    Om0 = Om0Planck
-    beta = 0
-
-    @jit
-    def darksiren_log_likelihood(H0,log10n0,z1,z50,gamma,mu,sigma):
-        n0 = 10**log10n0
-
-        z = z_of_dL(dL, H0, Om0)
-        m1 = m1det/(1+z)
-        m2 = m2det/(1+z)
-
-        log_weights = log_p_pop_pl_pl(m1,m2,mu,sigma,beta)
-
-        log_weights += - jnp.log(ddL_of_z(z,dL,H0,Om0)) - jnp.log(p_pe) - 2*jnp.log1p(z) + logPriorUniverse(z,samples_ind,H0,Om0Planck,n0,z1,z50,gamma)
-
-        log_weights = log_weights.reshape((nEvents,nsamp))
-        ll = jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights,axis=-1))
-
-        return ll
-
     H0_lo = 20
     H0_hi = 80
 
@@ -223,7 +125,7 @@ def main():
         return tuple(transformed_params)
 
     def likelihood(coord):
-        ll = darksiren_log_likelihood(*coord)
+        ll = darksiren_log_likelihood(*coord,m1det,m2det,dL,ra,dec,p_pe,samples_ind)
         if np.isnan(ll):
             return -np.inf
         else:
@@ -233,7 +135,7 @@ def main():
         for i in range(len(coord)):
             if (coord[i]<lower_bound[i] or coord[i]>upper_bound[i]):
                 return -np.inf
-        ll = darksiren_log_likelihood(*coord)
+        ll = darksiren_log_likelihood(*coord,m1det,m2det,dL,ra,dec,p_pe,samples_ind)
         if np.isnan(ll):
             return -np.inf
         else:
