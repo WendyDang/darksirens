@@ -35,6 +35,9 @@ from darksirens.utils.utils import *
 Om0 = Om0Planck
 beta = 0
 
+nEvents = 1000
+nsamp = 64
+
 @jit
 def darksiren_log_likelihood(H0,log10n0,z1,z50,gamma,mu,sigma,m1det,m2det,dL,ra,dec,p_pe,samples_ind):
     n0 = 10**log10n0
