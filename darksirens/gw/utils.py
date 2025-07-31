@@ -58,6 +58,83 @@ def load_gw_samples(gw_path, nsamp=64):
     try:
         p_pe = jnp.array(inp['p_pe'])
     except:
-        p_pe = jnp.ones(len(dL))
+        p_pe = dL**2
     
     return ra, dec, m1det, m2det, dL, p_pe, nEvents
+
+
+def load_selection_samples(file, nsamp=None, desired_pop_wt=None, far_threshold=1, rng=None):
+    """Return `(m1, q, z, pdraw, nsel)` to estimate selection effects.
+    
+    :param file: The injection file.
+
+    :param nsamp: The number of samples to be returned.
+
+    :param desired_pop_wt: Function giving a weight in `(m1, q, z)` from which
+        the population of injections should be drawn.  If none is given, the
+        reference distribution for the actual injections will be used; otherwise
+        the distribution of injections will be re-weighted to achieve the
+        desired poplation.
+
+    :param far_threshold: The threshold on the FAR (per year) at which an
+        injection is considered detected.
+
+    :param rng: A random number generator for the draws; if `None`, one will be
+        initialized randomly.
+
+    :return: A tuple `(m1, q, z, pdraw, nsel)`, giving a draw of detected
+        injections from the desired population.  `pdraw` is properly normalized
+        for estimating detectability as in, e.g., [Farr
+        (2019)](https://ui.adsabs.harvard.edu/abs/2019RNAAS...3...66F/abstract).
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    with h5py.File(file, 'r') as f:
+        m1detsels = np.array(f['injections/mass1'][:])
+        m2detsels = np.array(f['injections/mass2'][:])
+        dLsels = np.array(f['injections/distance'][:])
+        rasels = f['injections/right_ascension'][:]
+        decsels = f['injections/declination'][:]
+        zsels = z_of_dL(dLsels,H0Planck,Om0Planck)
+        pdraw_sel = np.array(f['injections/mass1_source_mass2_source_sampling_pdf'])*np.array(f['injections/redshift_sampling_pdf'])/(1+zsels)**2/ddL_of_z(zsels,dLsels,H0Planck,Om0Planck)
+
+        pycbc_far = np.array(f['injections/far_pycbc_hyperbank'])
+        pycbc_bbh_far = np.array(f['injections/far_pycbc_bbh'])
+        gstlal_far = np.array(f['injections/far_gstlal'])
+        mbta_far = np.array(f['injections/far_mbta'])
+
+        detected = (pycbc_far < far_threshold) | (pycbc_bbh_far < far_threshold) | (gstlal_far < far_threshold) | (mbta_far < far_threshold)
+
+        ndraw = f.attrs['n_accepted'] + f.attrs['n_rejected']
+
+        T = (f.attrs['end_time_s'] - f.attrs['start_time_s'])/(3600.0*24.0*365.25) 
+        pdraw_sel /= T
+
+        m1detsels = m1detsels[detected]
+        m2detsels = m2detsels[detected]
+        dLsels = dLsels[detected]
+        pdraw_sel = pdraw_sel[detected]
+        rasels = rasels[detected]
+        decsels = decsels[detected]
+
+        if desired_pop_wt is None:
+            pop_wt = pdraw_sel
+        else:
+            pop_wt = desired_pop_wt(m1s_sel, qs_sel, zs_sel)
+
+        unnorm_wt = pop_wt/pdraw_sel
+        sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
+        pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
+        
+#         if nsamp is None:
+#             inds = rng.choice(len(m1s_sel), size=nsamp, p=sum_norm_wt)
+#             m1s_sel_cut = m1s_sel[inds]
+#             qs_sel_cut = qs_sel[inds]
+#             zs_sel_cut = zs_sel[inds]
+#             pdraw_sel_cut = pdraw_wt[inds]
+#             ndraw_cut = nsamp
+
+#             return m1s_sel_cut, qs_sel_cut, zs_sel_cut, pdraw_sel_cut, ndraw_cut
+#         else:
+        return jnp.array(m1detsels), jnp.array(m2detsels), jnp.array(dLsels), jnp.array(rasels), jnp.array(decsels), jnp.array(pdraw_wt), ndraw

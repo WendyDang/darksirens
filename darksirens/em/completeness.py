@@ -49,9 +49,9 @@ def Ngals_lessthanz(z,pix):
 Ngals_lessthanz_vmap = jit(vmap(Ngals_lessthanz, in_axes=(0,None), out_axes=0))
 
 @jit
-def Ngals_expected_lessthanz(z,H0,Om0,n0,gamma):
+def Ngals_expected_lessthanz(z,H0,Om0,n0,delta):
     zz = jnp.expm1(jnp.linspace(jnp.log(1), jnp.log(z+1), 200))
-    Nexpected = jnp.trapezoid(n0*apix*dV_of_z(zz,H0,Om0)*(1+zz)**(gamma-1),zz)
+    Nexpected = jnp.trapezoid(n0*apix*dV_of_z(zz,H0,Om0)*(1+zz)**(delta-1),zz)
     return Nexpected
 
 Ngals_expected_lessthanz_vmap = jit(vmap(Ngals_expected_lessthanz, in_axes=(0,None,None,None,None), out_axes=0))
@@ -61,15 +61,15 @@ def Pcomplete0(z,z1,z50):
     return expit(-z1*(z/z50)+z1)
 
 @jit
-def completeness_fraction(H0,Om0,n0,z1,z50,gamma,z,pix):
-    Nexpected = 1+Ngals_expected_lessthanz_vmap(zgrid,H0,Om0,n0,gamma)
+def completeness_fraction(H0,Om0,n0,z1,z50,delta,z,pix):
+    Nexpected = 1+Ngals_expected_lessthanz_vmap(zgrid,H0,Om0,n0,delta)
     Ngals = Ngals_lessthanz_vmap(zgrid,pix)
     ratio = Ngals/Nexpected
 
     ratio = jnp.where((ratio < 1), ratio, 0)
     ratio = jnp.where((ratio != 0), ratio, 1)
-    #ratio = *Pcomplete0(zgrid,z1,z50)
-    pvol = dV_of_z(zgrid, H0, Om0)*(1+zgrid)**(gamma-1)
+    ratio = ratio*Pcomplete0(zgrid,z1,z50)
+    pvol = dV_of_z(zgrid, H0, Om0)*(1+zgrid)**(delta-1)
 
     V = jnp.trapezoid(ratio*pvol,zgrid)
     Vmax = jnp.trapezoid(pvol,zgrid)
@@ -86,10 +86,10 @@ completeness_fraction_vmap = jit(vmap(completeness_fraction, in_axes=(None,None,
 from jaxinterp2d import interp2d
 
 @jit
-def logpcatalog(z, pix, Om0, gamma):
+def logpcatalog(z, pix, Om0, delta):
     zs = zgals[pix] 
     ddzs = dzgals[pix]
-    wts = wgals[pix]*dV_of_z(zs,H0Planck,Om0)**(1+zs)**(gamma-1)
+    wts = wgals[pix]*dV_of_z(zs,H0Planck,Om0)**(1+zs)**(delta-1)
     ngals = len(zs)
     wts = wts/jnp.sum(wts)
     return logsumexp(jnp.log(wts) + norm.logpdf(z,zs,ddzs))
@@ -98,13 +98,13 @@ logpcatalog_vmap = jit(vmap(logpcatalog, in_axes=(0,0,None,None), out_axes=0))
 
 
 @jit
-def logPriorUniverse(z,pix,H0,Om0,n0,z1,z50,gamma):
-    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,gamma,z,pix)
+def logPriorUniverse(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
+    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix)
 
     logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
 
-    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, gamma), -jnp.inf)
+    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, delta), -jnp.inf)
 
-    logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) #+ (gamma-1)*jnp.log1p(z)
+    logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
 
     return logprob
