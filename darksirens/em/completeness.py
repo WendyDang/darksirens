@@ -89,7 +89,7 @@ from jaxinterp2d import interp2d
 def logpcatalog(z, pix, Om0, delta):
     zs = zgals[pix] 
     ddzs = dzgals[pix]
-    wts = wgals[pix]*dV_of_z(zs,H0Planck,Om0)**(1+zs)**(delta-1)
+    wts = wgals[pix]*dV_of_z(zs,H0Planck,Om0)*(1+zs)**(delta-1)
     ngals = len(zs)
     wts = wts/jnp.sum(wts)
     return logsumexp(jnp.log(wts) + norm.logpdf(z,zs,ddzs))

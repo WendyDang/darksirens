@@ -52,6 +52,7 @@ c=sns.color_palette('colorblind')
 jax.config.update("jax_enable_x64", True)
 jax.config.update('jax_default_matmul_precision', 'highest')
 
+from darksirens.gw.populations import pop_model_parser
 
 def main():
     optp = ArgumentParser()
@@ -92,45 +93,29 @@ def main():
     print(npix)
     samples_ind = hp.pixelfunc.ang2pix(nside,np.pi/2-dec,ra)
 
-#     H0_lo = 20
-#     H0_hi = 80
+    H0_lo = 20
+    H0_hi = 80
 
-#     Om0_lo = Om0grid[0]
-#     Om0_hi = Om0grid[-1] 
+    Om0_lo = Om0grid[0]
+    Om0_hi = Om0grid[-1] 
 
-#     gamma_lo = -5.0
-#     gamma_hi = 5.0
+    gamma_lo = -5.0
+    gamma_hi = 5.0
 
-#     mu_lo = 20
-#     mu_hi = 50
+    mu_lo = 20
+    mu_hi = 50
 
-#     sigma_lo = 1
-#     sigma_hi = 10
+    sigma_lo = 1
+    sigma_hi = 10
 
-#     log10n0_lo = -8.0
-#     log10n0_hi = 0.0
+    log10n0_lo = -8.0
+    log10n0_hi = 0.0
 
     z1_lo = 1
     z1_hi = 200
 
     z50_lo = 0
     z50_hi = 1
-
-#     lower_bound = [H0_lo, log10n0_lo, z1_lo, z50_lo, gamma_lo, mu_lo, sigma_lo]
-#     upper_bound = [H0_hi, log10n0_hi, z1_hi, z50_hi,  gamma_hi, mu_hi, sigma_hi]
-
-#     ndims = len(lower_bound)
-#     nlive = 500
-
-#     labels = [r'$H_0$',r'$\log_{10}n_0$','z1', 'z50',# r'$\delta$',
-#               r'$\gamma$',r'$\mu$',r'$\sigma$']
-#               #, r'$\beta$']
-
-    H0_lo = 20
-    H0_hi = 120
-
-    Om0_lo = Om0grid[0]
-    Om0_hi = Om0grid[-1] 
 
     gamma_lo = -10
     gamma_hi = 10
@@ -162,17 +147,20 @@ def main():
     dm_lo = 0
     dm_hi = 1
 
-    delta_lo = -10
-    delta_hi = 10
+    delta_lo = -50
+    delta_hi = 50
 
-    lower_bound = [H0_lo, log10n0_lo, z1_lo, z50_lo, delta_lo, gamma_lo, alpha_lo, beta_lo, m_max_lo, m_min_lo, dm_lo, dm_lo, mu_lo, sigma_lo, f_lo]
-    upper_bound = [H0_hi, log10n0_hi, z1_hi, z50_hi, delta_hi, gamma_hi, alpha_hi, beta_hi, m_max_hi, m_min_hi, dm_hi, dm_hi, mu_hi, sigma_hi, f_hi]
+    lower_bound = [H0_lo, log10n0_lo, z1_lo, z50_lo, delta_lo, 
+                   gamma_lo, alpha_lo, beta_lo, m_min_lo, m_max_lo, dm_lo, dm_lo, mu_lo, sigma_lo, f_lo]
+    upper_bound = [H0_hi, log10n0_hi, z1_hi, z50_hi, delta_hi, 
+                   gamma_hi, alpha_hi, beta_hi, m_min_hi, m_max_hi, dm_hi, dm_hi, mu_hi, sigma_hi, f_hi]
 
     ndims = len(lower_bound)
     nlive = 500
 
     labels = [r'$H_0$',# r'$\Omega_m$', 
-              '$\log_{10}n_0$','z1', 'z50',r'$\delta$',r'$\gamma$', 
+              '$\log_{10}n_0$','z1', 'z50',r'$\delta$',
+              r'$\gamma$', 
               r'$\alpha$',r'$\beta$', r'$m_{\rm max}$',r'$m_{\rm min}$',r'$dm_{\rm max}$',r'$dm_{\rm min}$',r'$\mu$',r'$\sigma$', r'$f$']
 
     def prior_transform(theta):

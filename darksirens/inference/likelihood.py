@@ -33,13 +33,18 @@ from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
 
 Om0 = Om0Planck
-beta = 0
 
 nEvents = 69
 nsamp = 256
 Ndraw = 73957576
 
 log_p_pop = pop_model_parser(pop_model='powerlaw+peak')
+
+def dVdz_normed(z,Om0,delta):
+    dvdz = dV_of_z(zgrid,H0Planck,Om0)*(1+zgrid)**(delta-1)
+    dvdz = dvdz/jnp.trapezoid(zgrid,dvdz)
+    return jnp.interp(z,zgrid,dvdz)
+
 
 # @jit
 # def darksiren_log_likelihood(H0,log10n0,z1,z50,gamma,mu,sigma,m1det,m2det,dL,ra,dec,p_pe,samples_ind):
@@ -76,8 +81,7 @@ log_p_pop = pop_model_parser(pop_model='powerlaw+peak')
 #     return ll
 
 @jit
-def darksiren_log_likelihood(H0,log10n0,z1,z50,delta,gamma,alpha,beta,m_max,m_min,dm_max,dm_min,mu,sigma,f,
-                             m1det,m2det,dL,ra,dec,p_pe,samples_ind,
+def darksiren_log_likelihood(H0,log10n0,z1,z50,delta,gamma,alpha,beta,m_min,m_max,dm_min,dm_max,mu,sigma,f,m1det,m2det,dL,ra,dec,p_pe,samples_ind,
                              m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind):
     n0 = 10**log10n0
 
@@ -107,6 +111,7 @@ def darksiren_log_likelihood(H0,log10n0,z1,z50,delta,gamma,alpha,beta,m_max,m_mi
     log_weights += - jnp.log(ddL_of_z(z,dL,H0,Om0)) - jnp.log(p_pe) - 2*jnp.log1p(z) + logPriorUniverse(z,samples_ind,H0,Om0Planck,n0,z1,z50,delta,gamma)
 
     log_weights = log_weights.reshape((nEvents,nsamp))
-    ll = jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights,axis=-1))
+    ll += jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights,axis=-1))
 
     return ll
+
