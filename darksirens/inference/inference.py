@@ -60,7 +60,7 @@ def main():
     optp.add_argument("--save_path", help="where to save", default='./')
     optp.add_argument("--pop_model", help="specify pop model", default='powerlaw+peak')
     optp.add_argument("--nsteps", type=int, default=1000)
-    optp.add_argument("--nsamp", type=int, default=64)
+    optp.add_argument("--nsamp", type=int, default=256)
     optp.add_argument("--seed", type=int, default=22)
 
     opts = optp.parse_args()

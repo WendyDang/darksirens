@@ -36,7 +36,7 @@ from darksirens.em.utils import load_survey
 
 from jax.scipy.special import expit
 
-nside, ngals, zgals, dzgals, wgals = load_survey('/hildafs/home/magana/tmp_ondemand_hildafs_phy230014p_symlink/magana/lognormal_pixelated_nside_64_galaxies.h5',dz=0.001)
+nside, ngals, zgals, dzgals, wgals = load_survey('/hildafs/home/magana/tmp_ondemand_hildafs_phy230014p_symlink/magana/working/darksirens/catalogs/desi/kibo_pixelated_nside_64_galaxies.h5',dz=0.001)
 
 npix = hp.pixelfunc.nside2npix(nside)
 apix = hp.pixelfunc.nside2pixarea(nside)

@@ -36,7 +36,7 @@ Om0 = Om0Planck
 beta = 0
 
 nEvents = 69
-nsamp = 64
+nsamp = 256
 Ndraw = 73957576
 
 log_p_pop = pop_model_parser(pop_model='powerlaw+peak')
