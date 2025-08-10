@@ -33,8 +33,10 @@ def load_survey(survey_path, dz=0.001):
         ngals = jnp.asarray(f['ngals'])
     try: 
         dzgals = jnp.asarray(f['dzgals'])
-        wgals = jnp.asarray(f['wgals'])        
     except:
         dzgals = dz*(1+zgals)
+    try:
+        wgals = jnp.asarray(f['wgals'])
+    except:
         wgals = jnp.ones(zgals.shape)
     return nside, ngals, zgals, dzgals, wgals

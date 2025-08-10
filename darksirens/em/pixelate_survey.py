@@ -26,9 +26,11 @@ def main():
     nside = opts.nside
 
     with h5py.File(survey_path, 'r') as f:
-        ras_ = np.asarray(f['ra_gal'])*np.pi/180
-        decs_ = np.asarray(f['dec_gal'])*np.pi/180
-        zs_ = np.asarray(f['z_gal'])
+        ras_ = np.array(f['TARGET_RA'])*np.pi/180
+        decs_ = np.array(f['TARGET_DEC'])*np.pi/180
+        zs_ = np.array(f['Z'])
+        #ddzs_ = np.array(inp['ZERR'])
+        #wts_ = np.array(inp['WEIGHT'])
 
     ngals = len(ras_)
 

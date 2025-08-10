@@ -60,7 +60,7 @@ def load_gw_samples(gw_path, nsamp=64):
     except:
         p_pe = dL**2
     
-    return ra, dec, m1det, m2det, dL, p_pe, nEvents
+    return m1det, m2det, dL, ra, dec, p_pe, nEvents
 
 
 def load_selection_samples(file, nsamp=None, desired_pop_wt=None, far_threshold=1, rng=None):

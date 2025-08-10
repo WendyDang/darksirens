@@ -35,16 +35,10 @@ from darksirens.utils.utils import *
 Om0 = Om0Planck
 
 nEvents = 69
-nsamp = 256
+nsamp = 32
 Ndraw = 73957576
 
 log_p_pop = pop_model_parser(pop_model='powerlaw+peak')
-
-def dVdz_normed(z,Om0,delta):
-    dvdz = dV_of_z(zgrid,H0Planck,Om0)*(1+zgrid)**(delta-1)
-    dvdz = dvdz/jnp.trapezoid(zgrid,dvdz)
-    return jnp.interp(z,zgrid,dvdz)
-
 
 # @jit
 # def darksiren_log_likelihood(H0,log10n0,z1,z50,gamma,mu,sigma,m1det,m2det,dL,ra,dec,p_pe,samples_ind):
