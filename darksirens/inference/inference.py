@@ -30,6 +30,8 @@ from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
 from darksirens.inference.likelihood import *
 
+from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
+
 from darksirens.gw.utils import load_gw_samples
 from darksirens.gw.utils import load_selection_samples
 from darksirens.em.utils import load_survey
@@ -71,7 +73,7 @@ def main():
     optp.add_argument("--pop_model", help="specify pop model", default='powerlaw+peak')
     optp.add_argument("--nsamp", type=int, default=256)
     optp.add_argument("--emcee", type=str_to_bool, nargs='?', const=False, default=False)
-    optp.add_argument("--nlive", type=int, default=50)
+    optp.add_argument("--nlive", type=int, default=500)
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--nwalkers", type=int, default=32)    
     optp.add_argument("--seed", type=int, default=22)
@@ -94,83 +96,20 @@ def main():
     print(nside)
         
     m1det, m2det, dL, ra, dec, p_pe, nEvents = load_gw_samples(gw_path, nsamp=nsamp)
+    print(nEvents,nsamp)
     
-    m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, Ndraw = load_selection_samples(gwselection_path)
+    m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, Ndraw = load_selection_samples(gwselection_path,nsamp=50000)
+    print(len(m1detsels),Ndraw)
     
     npix = hp.pixelfunc.nside2npix(nside)
     apix = hp.pixelfunc.nside2pixarea(nside)
 
     samples_ind = hp.pixelfunc.ang2pix(nside,np.pi/2-dec,ra)
     selsamples_ind = hp.pixelfunc.ang2pix(nside,np.pi/2-decsels,rasels)
-
-    H0_lo = 20
-    H0_hi = 140
-
-    Om0_lo = Om0grid[0]
-    Om0_hi = Om0grid[-1] 
-
-    gamma_lo = -5.0
-    gamma_hi = 5.0
-
-    mu_lo = 20
-    mu_hi = 50
-
-    sigma_lo = 1
-    sigma_hi = 10
-
-    log10n0_lo = -8.0
-    log10n0_hi = 0.0
-
-    z1_lo = 1
-    z1_hi = 200
-
-    z50_lo = 0
-    z50_hi = 1
-
-    gamma_lo = -10
-    gamma_hi = 10
-
-    log10n0_lo = -10.0
-    log10n0_hi = 1.0
-
-    alpha_lo = 0
-    alpha_hi = 10
-
-    beta_lo = 0
-    beta_hi = 6
-
-    m_min_lo = 1
-    m_min_hi = 10
-
-    m_max_lo = 50
-    m_max_hi = 100
-
-    mu_lo = 20
-    mu_hi = 50
-
-    sigma_lo = 1
-    sigma_hi = 10
-
-    f_lo = 0.0
-    f_hi = 1.0
-
-    dm_lo = 0
-    dm_hi = 1
-
-    delta_lo = -50
-    delta_hi = 50
-
-    lower_bound = [H0_lo, log10n0_lo, z1_lo, z50_lo, delta_lo, 
-                   gamma_lo, alpha_lo, beta_lo, m_min_lo, m_max_lo, dm_lo, dm_lo, mu_lo, sigma_lo, f_lo]
-    upper_bound = [H0_hi, log10n0_hi, z1_hi, z50_hi, delta_hi, 
-                   gamma_hi, alpha_hi, beta_hi, m_min_hi, m_max_hi, dm_hi, dm_hi, mu_hi, sigma_hi, f_hi]
+    
+    lower_bound, upper_bound, labels = pop_model_prior_parser(pop_model=pop_model)
 
     ndims = len(lower_bound)
-
-    labels = [r'$H_0$',# r'$\Omega_m$', 
-              '$\log_{10}n_0$','z1', 'z50',r'$\delta$',
-              r'$\gamma$', 
-              r'$\alpha$',r'$\beta$', r'$m_{\rm max}$',r'$m_{\rm min}$',r'$dm_{\rm max}$',r'$dm_{\rm min}$',r'$\mu$',r'$\sigma$', r'$f$']
 
     def prior_transform(theta):
         transformed_params = [
@@ -181,7 +120,13 @@ def main():
         return tuple(transformed_params)
 
     def likelihood(coord):
-        ll = darksiren_log_likelihood(*coord,m1det,m2det,dL,ra,dec,p_pe,samples_ind,m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind)
+        cosmo_params = coord[0:2]
+        survey_params = coord[2:7]
+        pop_params = coord[7:]
+        ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
+                                      m1det, m2det, dL, ra, dec, p_pe, samples_ind,
+                                      m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
+                                      nEvents, nsamp, Ndraw, pop_model)
         if np.isnan(ll):
             return -np.inf
         else:
@@ -191,7 +136,15 @@ def main():
         for i in range(len(coord)):
             if (coord[i]<lower_bound[i] or coord[i]>upper_bound[i]):
                 return -np.inf
-        ll = darksiren_log_likelihood(*coord,m1det,m2det,dL,ra,dec,p_pe,samples_ind,m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind)
+        
+        cosmo_params = coord[0:2]
+        survey_params = coord[2:7]
+        pop_params = coord[7:]
+        
+        ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
+                                      m1det, m2det, dL, ra, dec, p_pe, samples_ind,
+                                      m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
+                                      nEvents, nsamp, Ndraw, pop_model)
         if np.isnan(ll):
             return -np.inf
         else:

@@ -108,3 +108,44 @@ def logPriorUniverse(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
     logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
 
     return logprob
+
+
+@jit
+def logPriorUniverse_spectral(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
+    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix)
+    
+    f = 0
+    logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
+
+    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, delta), -jnp.inf)
+
+    logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
+
+    return logprob
+
+
+@jit
+def logPriorUniverse_spectral_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
+
+    pvol = dV_of_z(zgrid, H0, Om0)*(1+zgrid)**(gamma-1)
+    pvol = pvol/jnp.trapezoid(pvol,zgrid)
+    logpvol = jnp.log(pvol)
+    logp = jnp.interp(z,zgrid,logpvol)
+
+    return logp
+
+
+
+def universe_model_parser(universe_model='darksirens'):
+    
+    if universe_model=='darksirens':
+        logp = logPriorUniverse
+
+    if universe_model=='spectral_sirens':
+        logp = logPriorUniverse_spectral
+        
+
+    if universe_model=='spectral_sirens_fast':
+        logp = logPriorUniverse_spectral_fast
+
+    return logp
