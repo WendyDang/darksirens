@@ -31,12 +31,11 @@ def load_survey(survey_path, dz=0.001):
         nside = f.attrs['nside']
         zgals = jnp.asarray(f['zgals'])
         ngals = jnp.asarray(f['ngals'])
-    try: 
+#     try: 
         dzgals = jnp.asarray(f['dzgals'])
-    except:
-        dzgals = dz*(1+zgals)
-    try:
         wgals = jnp.asarray(f['wgals'])
-    except:
-        wgals = jnp.ones(zgals.shape)
+#     except:
+#         print('No dzs or wts, loading default')
+#         dzgals = dz*(1+zgals)
+#         wgals = jnp.ones(zgals.shape)
     return nside, ngals, zgals, dzgals, wgals

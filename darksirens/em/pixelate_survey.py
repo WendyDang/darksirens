@@ -29,8 +29,13 @@ def main():
         ras_ = np.array(f['TARGET_RA'])*np.pi/180
         decs_ = np.array(f['TARGET_DEC'])*np.pi/180
         zs_ = np.array(f['Z'])
-        #ddzs_ = np.array(inp['ZERR'])
-        #wts_ = np.array(inp['WEIGHT'])
+        try:
+            ddzs_ = np.array(inp['ZERR'])
+            wts_ = np.array(inp['WEIGHT'])
+        except:
+            dz = 0.033
+            ddzs_ = dz*(1+zs_)
+            wts_ = np.ones(len(zs_))
 
     ngals = len(ras_)
 
@@ -58,18 +63,29 @@ def main():
     print(maxgals)
 
     cats = []
+    dzcats = []
+    dwcats = []
     ngalaxies = []
     for pix in tqdm(pixgrid):
         idx = results[pix]
         gals = zs_[idx]
+        dgals = ddzs_[idx]
+        wgals = wts_[idx]
         ngals = gals.shape[0]
+        
         zgals = [gals]
+        dzgals = [dgals]
+        dwgals = [wgals]
 
         if ngals < maxgals:
             lenght = int(maxgals - ngals)
             zgals.append(100*np.ones(lenght))
+            dzgals.append(1*np.ones(lenght))
+            dwgals.append(np.zeros(lenght))
 
         cats.append(np.concatenate(zgals))
+        dzcats.append(np.concatenate(dzgals))
+        dwcats.append(np.concatenate(dwgals))
         ngalaxies.append(ngals)
 
     del results
@@ -78,6 +94,8 @@ def main():
     with h5py.File(save_path + 'lognormal_pixelated_nside_'+str(nside)+'_galaxies.h5', 'w') as f:
         f.attrs['nside'] = nside
         f.create_dataset('zgals', data=np.asarray(cats), compression='gzip', shuffle=False)
+        f.create_dataset('dzgals', data=np.asarray(dzcats), compression='gzip', shuffle=False)
+        f.create_dataset('wgals', data=np.asarray(dwcats), compression='gzip', shuffle=False)
         f.create_dataset('ngals', data=np.asarray(ngalaxies), compression='gzip', shuffle=False)
         
 if __name__ == "__main__":

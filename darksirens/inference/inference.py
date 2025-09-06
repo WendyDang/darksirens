@@ -73,6 +73,7 @@ def main():
     optp.add_argument("--emcee", type=str_to_bool, nargs='?', const=False, default=False)
     optp.add_argument("--nlive", type=int, default=50)
     optp.add_argument("--nsteps", type=int, default=1000)
+    optp.add_argument("--nwalkers", type=int, default=32)    
     optp.add_argument("--seed", type=int, default=22)
 
     opts = optp.parse_args()
@@ -83,10 +84,13 @@ def main():
     save_path = opts.save_path
     pop_model = opts.pop_model
     nsteps = opts.nsteps
+    nwalkers = opts.nwalkers
     nsamp = opts.nsamp
     seed = opts.seed
     
     nside, ngals, zgals, dzgals, wgals = load_survey(survey_path, dz=0.001)
+    print(dzgals)
+    print(wgals)
     print(nside)
         
     m1det, m2det, dL, ra, dec, p_pe, nEvents = load_gw_samples(gw_path, nsamp=nsamp)
@@ -197,16 +201,14 @@ def main():
 
         import emcee
 
-        n_walkers = int(10*ndims)
-        p0 = np.random.uniform(lower_bound, upper_bound, size=(n_walkers, len(lower_bound)))
-        n_steps = nsteps
+        p0 = np.random.uniform(lower_bound, upper_bound, size=(nwalkers, len(lower_bound)))
 
-        sampler = emcee.EnsembleSampler(n_walkers, ndims, likelihood_emcee,
+        sampler = emcee.EnsembleSampler(nwalkers, ndims, likelihood_emcee,
                                         moves=[
                 (emcee.moves.DEMove(), 0.8),
                 (emcee.moves.DESnookerMove(), 0.2),
             ])#, pool=pool)
-        sampler.run_mcmc(p0, n_steps, progress=True)
+        sampler.run_mcmc(p0, nsteps, progress=True)
 
         shape = sampler.flatchain.shape[0]
         print(shape)
