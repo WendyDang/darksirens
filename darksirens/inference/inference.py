@@ -71,11 +71,11 @@ def main():
     optp.add_argument("--gwselection_path", help="path to gw data")
     optp.add_argument("--save_path", help="where to save", default='./')
     optp.add_argument("--pop_model", help="specify pop model", default='powerlaw+peak')
+    optp.add_argument("--universe_model", help="specify pop model", default='spectral_sirens_fast')
     optp.add_argument("--nsamp", type=int, default=256)
     optp.add_argument("--emcee", type=str_to_bool, nargs='?', const=False, default=False)
     optp.add_argument("--nlive", type=int, default=500)
     optp.add_argument("--nsteps", type=int, default=1000)
-    optp.add_argument("--nwalkers", type=int, default=32)    
     optp.add_argument("--seed", type=int, default=22)
 
     opts = optp.parse_args()
@@ -85,21 +85,16 @@ def main():
     gwselection_path = opts.gwselection_path
     save_path = opts.save_path
     pop_model = opts.pop_model
+    universe_model = opts.universe_model
     nsteps = opts.nsteps
-    nwalkers = opts.nwalkers
     nsamp = opts.nsamp
     seed = opts.seed
     
-    nside, ngals, zgals, dzgals, wgals = load_survey(survey_path, dz=0.001)
-    print(dzgals)
-    print(wgals)
-    print(nside)
+    nside, ngals, zgals, dzgals, wgals = load_survey(survey_path)
         
     m1det, m2det, dL, ra, dec, p_pe, nEvents = load_gw_samples(gw_path, nsamp=nsamp)
-    print(nEvents,nsamp)
     
     m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, Ndraw = load_selection_samples(gwselection_path,nsamp=50000)
-    print(len(m1detsels),Ndraw)
     
     npix = hp.pixelfunc.nside2npix(nside)
     apix = hp.pixelfunc.nside2pixarea(nside)
@@ -123,10 +118,11 @@ def main():
         cosmo_params = coord[0:2]
         survey_params = coord[2:7]
         pop_params = coord[7:]
+        
         ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
                                       m1det, m2det, dL, ra, dec, p_pe, samples_ind,
                                       m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-                                      nEvents, nsamp, Ndraw, pop_model)
+                                      nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model)
         if np.isnan(ll):
             return -np.inf
         else:
@@ -144,7 +140,7 @@ def main():
         ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
                                       m1det, m2det, dL, ra, dec, p_pe, samples_ind,
                                       m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-                                      nEvents, nsamp, Ndraw, pop_model)
+                                      nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model)
         if np.isnan(ll):
             return -np.inf
         else:
@@ -153,6 +149,7 @@ def main():
     if opts.emcee is True:
 
         import emcee
+        nwalkers = 2 * ndims
 
         p0 = np.random.uniform(lower_bound, upper_bound, size=(nwalkers, len(lower_bound)))
 
@@ -160,7 +157,7 @@ def main():
                                         moves=[
                 (emcee.moves.DEMove(), 0.8),
                 (emcee.moves.DESnookerMove(), 0.2),
-            ])#, pool=pool)
+            ])
         sampler.run_mcmc(p0, nsteps, progress=True)
 
         shape = sampler.flatchain.shape[0]
@@ -174,7 +171,6 @@ def main():
 
 
         import corner
-        #truths = [H0Planck,-4,5,0.3,-1,35,5]
 
         dpostsamples = dpostsamples_backup[choose]
     
@@ -182,7 +178,6 @@ def main():
 
         from dynesty.utils import resample_equal
         from dynesty import NestedSampler, DynamicNestedSampler
-        import multiprocessing as multi
         
         nlive = opts.nlive
 
@@ -192,10 +187,10 @@ def main():
         Dynamic = False
 
         if Dynamic is True:
-            dsampler = DynamicNestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)#, pool=pool)
+            dsampler = DynamicNestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
             dsampler.run_nested()
         else:
-            dsampler = NestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)#, pool=pool)
+            dsampler = NestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
             dsampler.run_nested(dlogz=0.1)
             
         import corner

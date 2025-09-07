@@ -26,16 +26,11 @@ import glob
 
 from darksirens.utils.cosmology import *
 
-def load_survey(survey_path, dz=0.001):
+def load_survey(survey_path):
     with h5py.File(survey_path, 'r') as f:
         nside = f.attrs['nside']
         zgals = jnp.asarray(f['zgals'])
         ngals = jnp.asarray(f['ngals'])
-#     try: 
         dzgals = jnp.asarray(f['dzgals'])
         wgals = jnp.asarray(f['wgals'])
-#     except:
-#         print('No dzs or wts, loading default')
-#         dzgals = dz*(1+zgals)
-#         wgals = jnp.ones(zgals.shape)
     return nside, ngals, zgals, dzgals, wgals

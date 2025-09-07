@@ -6,6 +6,7 @@ import jax
 from jax import random, jit, vmap, grad
 from jax import numpy as jnp
 from jax.lax import cond
+from functools import partial
 
 import astropy
 import numpy as np
@@ -20,50 +21,45 @@ from jax.scipy.special import logsumexp
 from scipy.interpolate import interp1d
 from scipy.stats import gaussian_kde
 from jax.scipy.stats import norm
+from jaxinterp2d import interp2d
 
 from tqdm import tqdm
 
 from argparse import ArgumentParser
 import glob
 
-from darksirens.em.completeness import *
 from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
-from darksirens.inference.likelihood import *
 
 from darksirens.gw.utils import load_gw_samples
 from darksirens.em.utils import load_survey
 
 from jax.scipy.special import expit
 
-nside, ngals, zgals, dzgals, wgals = load_survey('/hildafs/home/magana/tmp_ondemand_hildafs_phy230014p_symlink/magana/working/darksirens/catalogs/desi/kibo_pixelated_nside_64_galaxies.h5',dz=0.001)
-
-npix = hp.pixelfunc.nside2npix(nside)
-apix = hp.pixelfunc.nside2pixarea(nside)
 
 @jit
-def Ngals_lessthanz(z,pix):
+def Ngals_lessthanz(z,pix,zgals):
     Ngals = jnp.where((zgals[pix] < z), jnp.ones(len(zgals[pix])), 0).sum()
     return Ngals
 
-Ngals_lessthanz_vmap = jit(vmap(Ngals_lessthanz, in_axes=(0,None), out_axes=0))
+Ngals_lessthanz_vmap = jit(vmap(Ngals_lessthanz, in_axes=(0,None,None), out_axes=0))
 
-@jit
-def Ngals_expected_lessthanz(z,H0,Om0,n0,delta):
+@partial(jax.jit, static_argnames=['apix'])
+def Ngals_expected_lessthanz(z,H0,Om0,n0,delta,apix):
     zz = jnp.expm1(jnp.linspace(jnp.log(1), jnp.log(z+1), 200))
     Nexpected = jnp.trapezoid(n0*apix*dV_of_z(zz,H0,Om0)*(1+zz)**(delta-1),zz)
     return Nexpected
 
-Ngals_expected_lessthanz_vmap = jit(vmap(Ngals_expected_lessthanz, in_axes=(0,None,None,None,None), out_axes=0))
+Ngals_expected_lessthanz_vmap = jit(vmap(Ngals_expected_lessthanz, in_axes=(0,None,None,None,None,None), out_axes=0))
 
 @jit
 def Pcomplete0(z,z1,z50):
     return expit(-z1*(z/z50)+z1)
 
-@jit
-def completeness_fraction(H0,Om0,n0,z1,z50,delta,z,pix):
-    Nexpected = 1+Ngals_expected_lessthanz_vmap(zgrid,H0,Om0,n0,delta)
-    Ngals = Ngals_lessthanz_vmap(zgrid,pix)
+@partial(jax.jit, static_argnames=['apix'])
+def completeness_fraction(H0,Om0,n0,z1,z50,delta,z,pix,apix,zgals):
+    Nexpected = 1+Ngals_expected_lessthanz_vmap(zgrid,H0,Om0,n0,delta,apix)
+    Ngals = Ngals_lessthanz_vmap(zgrid,pix,zgals)
     ratio = Ngals/Nexpected
 
     ratio = jnp.where((ratio < 1), ratio, 0)
@@ -81,12 +77,11 @@ def completeness_fraction(H0,Om0,n0,z1,z50,delta,z,pix):
 
     return V/Vmax, pmiss_z, ratio
 
-completeness_fraction_vmap = jit(vmap(completeness_fraction, in_axes=(None,None,None,None,None,None,0,0), out_axes=0))
+completeness_fraction_vmap = jit(vmap(completeness_fraction, in_axes=(None,None,None,None,None,None,0,0,None,None), out_axes=0))
 
-from jaxinterp2d import interp2d
 
 @jit
-def logpcatalog(z, pix, Om0, delta):
+def logpcatalog(z, pix, Om0, delta, zgals, dzgals, wgals):
     zs = zgals[pix] 
     ddzs = dzgals[pix]
     wts = wgals[pix]*dV_of_z(zs,H0Planck,Om0)*(1+zs)**(delta-1)
@@ -94,38 +89,38 @@ def logpcatalog(z, pix, Om0, delta):
     wts = wts/jnp.sum(wts)
     return logsumexp(jnp.log(wts) + norm.logpdf(z,zs,ddzs))
 
-logpcatalog_vmap = jit(vmap(logpcatalog, in_axes=(0,0,None,None), out_axes=0))
+logpcatalog_vmap = jit(vmap(logpcatalog, in_axes=(0,0,None,None,None,None,None), out_axes=0))
 
 
-@jit
-def logPriorUniverse(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
-    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix)
+@partial(jax.jit, static_argnames=['apix'])
+def logPriorUniverse_darksirens(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals):
+    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix,apix,zgals)
 
     logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
 
-    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, delta), -jnp.inf)
+    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, delta, zgals, dzgals, wgals), -jnp.inf)
 
     logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
 
     return logprob
 
 
-@jit
-def logPriorUniverse_spectral(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
-    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix)
+@partial(jax.jit, static_argnames=['apix'])
+def logPriorUniverse_spectralsirens(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals):
+    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix,apix,zgals)
     
     f = 0
     logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
 
-    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, delta), -jnp.inf)
+    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, Om0, delta, zgals, dzgals, wgals), -jnp.inf)
 
     logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
 
     return logprob
 
 
-@jit
-def logPriorUniverse_spectral_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
+@partial(jax.jit, static_argnames=['apix'])
+def logPriorUniverse_spectralsirens_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals):
 
     pvol = dV_of_z(zgrid, H0, Om0)*(1+zgrid)**(gamma-1)
     pvol = pvol/jnp.trapezoid(pvol,zgrid)
@@ -139,13 +134,13 @@ def logPriorUniverse_spectral_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma):
 def universe_model_parser(universe_model='darksirens'):
     
     if universe_model=='darksirens':
-        logp = logPriorUniverse
+        logp = logPriorUniverse_darksirens
 
     if universe_model=='spectral_sirens':
-        logp = logPriorUniverse_spectral
+        logp = logPriorUniverse_spectralsirens
         
 
     if universe_model=='spectral_sirens_fast':
-        logp = logPriorUniverse_spectral_fast
+        logp = logPriorUniverse_spectralsirens_fast
 
     return logp
