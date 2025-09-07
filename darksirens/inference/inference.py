@@ -73,7 +73,9 @@ def main():
     optp.add_argument("--pop_model", help="specify pop model", default='powerlaw+peak')
     optp.add_argument("--universe_model", help="specify pop model", default='spectral_sirens_fast')
     optp.add_argument("--nsamp", type=int, default=256)
+    optp.add_argument("--nsamp_sel", type=int, default=5000)
     optp.add_argument("--emcee", type=str_to_bool, nargs='?', const=False, default=False)
+    optp.add_argument("--numpyro", type=str_to_bool, nargs='?', const=False, default=False)
     optp.add_argument("--nlive", type=int, default=500)
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
@@ -88,13 +90,14 @@ def main():
     universe_model = opts.universe_model
     nsteps = opts.nsteps
     nsamp = opts.nsamp
+    nsamp_sel = opts.nsamp_sel
     seed = opts.seed
     
     nside, ngals, zgals, dzgals, wgals = load_survey(survey_path)
         
     m1det, m2det, dL, ra, dec, p_pe, nEvents = load_gw_samples(gw_path, nsamp=nsamp)
     
-    m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, Ndraw = load_selection_samples(gwselection_path,nsamp=50000)
+    m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, Ndraw = load_selection_samples(gwselection_path,nsamp=nsamp_sel)
     
     npix = hp.pixelfunc.nside2npix(nside)
     apix = hp.pixelfunc.nside2pixarea(nside)
@@ -173,52 +176,130 @@ def main():
         import corner
 
         dpostsamples = dpostsamples_backup[choose]
-    
-    else:
-
-        from dynesty.utils import resample_equal
-        from dynesty import NestedSampler, DynamicNestedSampler
         
-        nlive = opts.nlive
+#     if opts.numpyro is True:
+        
+#         import numpyro
+#         from numpyro import distributions as dist
+#         from numpyro.infer import MCMC
+#         from numpyro.infer import NUTS
+#         from numpyro.infer.initialization import init_to_feasible, init_to_median
 
-        bound = 'multi'
-        sample = 'rwalk'
-        nprocesses = 1
-        Dynamic = False
+#         seed = np.random.randint(1000)
+#         key = jax.random.PRNGKey(1000)
 
-        if Dynamic is True:
-            dsampler = DynamicNestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
-            dsampler.run_nested()
-        else:
-            dsampler = NestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
-            dsampler.run_nested(dlogz=0.1)
+
+#         def darksiren_model_numpyro():
+
+#             H0 = numpyro.sample("H0", dist.Uniform(20, 100))
+#             Om0 = numpyro.sample('Om0', dist.Uniform(Om0grid[0], Om0grid[-1]))
+
+#             log10n0 = numpyro.sample('log10n0', dist.Uniform(-5.0, 0.0))
             
-        import corner
+#             z1 = numpyro.sample('z1', dist.Uniform(1, 200))
+#             z50 = numpyro.sample('z50', dist.Uniform(0, 1))
+#             delta = numpyro.sample('delta', dist.Uniform(-10, 10))
+#             gamma = numpyro.sample('gamma', dist.Uniform(-10, 10))
+            
+#             alpha = numpyro.sample('alpha', dist.Uniform(0, 6))
+#             beta = numpyro.sample('beta', dist.Uniform(0, 6))
+#             m_min = numpyro.sample('m_min', dist.Uniform(1, 10))
+#             m_max = numpyro.sample('m_max', dist.Uniform(50, 200))
+#             dm_min = numpyro.sample('dm_min', dist.Uniform(0, 1))
+#             dm_max = numpyro.sample('dm_max', dist.Uniform(0, 1))
+#             mu = numpyro.sample('mu', dist.Uniform(20, 50))
+#             sigma = numpyro.sample('sigma', dist.Uniform(1, 10))
+#             f = numpyro.sample('f', dist.Uniform(0, 1))
+            
+#             cosmo_params = (H0, Om0)
+#             survey_params = (log10n0,z1,z50,delta,gamma)
+#             pop_params = (alpha,beta,m_min,m_max,dm_min,dm_max,mu,sigma,f)
 
-        dres = dsampler.results
+#             ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
+#                                           m1det, m2det, dL, ra, dec, p_pe, samples_ind,
+#                                           m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
+#                                           nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model)
+            
+#             ll = numpyro.deterministic('ll', ll)
 
-        dlogZdynesty = dres.logz[-1]        # value of logZ
-        dlogZerrdynesty = dres.logzerr[-1]  # estimate of the statistcal uncertainty on logZ
+#             numpyro.factor('log_likelihood', ll)
 
-        # output marginal likelihood
-        print('Marginalised evidence (using dynamic sampler) is {} ± {}'.format(dlogZdynesty, dlogZerrdynesty))
 
-        # get the posterior samples
-        dweights = np.exp(dres['logwt'] - dres['logz'][-1])
-        dpostsamples = resample_equal(dres.samples, dweights)
+#         def darksiren_sample(
+#                 thinning=100,
+#                 num_warmup=10,
+#                 num_samples=100,
+#                 num_chains=1,target_accept_prob=0.9):
 
-        print('Number of posterior samples (using dynamic sampler) is {}'.format(dpostsamples.shape[0]))
 
-#         import pickle
+#             RNG = jax.random.PRNGKey(0)
+#             MCMC_RNG, PRIOR_RNG, _RNG = jax.random.split(RNG, num=3)
+#             kernel = NUTS(darksiren_model_numpyro, target_accept_prob=target_accept_prob, init_strategy=init_to_median())
+#             mcmc = MCMC(
+#                 kernel,
+#                 thinning=thinning,
+#                 num_warmup=num_warmup,
+#                 num_samples=num_samples,
+#                 num_chains=num_chains,
+#             )
 
-#         # open a file, where you ant to store the data
-#         file = open(filename + '-samples', 'wb')
+#             mcmc.run(PRIOR_RNG)
 
-#         # dump information to that file
-#         pickle.dump(dres, file)
+#             return mcmc.get_samples()
+        
+#         samples = darksiren_sample(
+#                 thinning=1,
+#                 num_warmup=1000,
+#                 num_samples=5000,
+#                 num_chains=1,
+#                 target_accept_prob=0.3)
+#         dpostsamples = np.column_stack(samples.values())
+    
+#     else:
 
-#         # close the file
-#         file.close()
+#         from dynesty.utils import resample_equal
+#         from dynesty import NestedSampler, DynamicNestedSampler
+        
+#         nlive = opts.nlive
+
+#         bound = 'multi'
+#         sample = 'rwalk'
+#         nprocesses = 1
+#         Dynamic = False
+
+#         if Dynamic is True:
+#             dsampler = DynamicNestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
+#             dsampler.run_nested()
+#         else:
+#             dsampler = NestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
+#             dsampler.run_nested(dlogz=0.1)
+            
+#         import corner
+
+#         dres = dsampler.results
+
+#         dlogZdynesty = dres.logz[-1]        # value of logZ
+#         dlogZerrdynesty = dres.logzerr[-1]  # estimate of the statistcal uncertainty on logZ
+
+#         # output marginal likelihood
+#         print('Marginalised evidence (using dynamic sampler) is {} ± {}'.format(dlogZdynesty, dlogZerrdynesty))
+
+#         # get the posterior samples
+#         dweights = np.exp(dres['logwt'] - dres['logz'][-1])
+#         dpostsamples = resample_equal(dres.samples, dweights)
+
+#         print('Number of posterior samples (using dynamic sampler) is {}'.format(dpostsamples.shape[0]))
+
+# #         import pickle
+
+# #         # open a file, where you ant to store the data
+# #         file = open(filename + '-samples', 'wb')
+
+# #         # dump information to that file
+# #         pickle.dump(dres, file)
+
+# #         # close the file
+# #         file.close()
 
 
 

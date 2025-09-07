@@ -43,7 +43,9 @@ def darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
     logPriorUniverse = universe_model_parser(universe_model=universe_model)
 
     H0, Om0 = cosmo_params
-    n0, z1, z50, delta, gamma = survey_params
+    log10n0, z1, z50, delta, gamma = survey_params
+    
+    n0 = 10**log10n0
 
     zsels = z_of_dL(dLsels, H0, Om0)
     m1sels = m1detsels/(1+zsels)
@@ -73,5 +75,5 @@ def darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
     log_weights = log_weights.reshape((nEvents,nsamp))
     ll += jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights,axis=-1))
 
-    return ll
+    return jnp.nan_to_num(ll,nan=-jnp.inf)
 
