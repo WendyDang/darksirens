@@ -32,11 +32,11 @@ from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
 
 
-@partial(jax.jit, static_argnames=['nEvents', 'Ndraw', 'nsamp', 'apix', 'pop_model', 'universe_model'])
+@partial(jax.jit, static_argnames=['nEvents', 'Ndraw', 'nsamp', 'apix', 'batch', 'pop_model', 'universe_model'])
 def darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
                              m1det, m2det, dL, ra, dec, p_pe, samples_ind,
                              m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-                             nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model):
+                             nEvents, nsamp, Ndraw, apix, batch, zgals, dzgals, wgals, pop_model, universe_model):
     
     log_p_pop = pop_model_parser(pop_model=pop_model)
     
@@ -53,7 +53,7 @@ def darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
 
     log_det_weights = log_p_pop(m1sels,m2sels,*pop_params)
 
-    log_det_weights += - jnp.log(ddL_of_z(zsels,dLsels,H0,Om0)) - jnp.log(p_draw) - 2*jnp.log1p(zsels) + logPriorUniverse(zsels,selsamples_ind,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals)
+    log_det_weights += - jnp.log(ddL_of_z(zsels,dLsels,H0,Om0)) - jnp.log(p_draw) - 2*jnp.log1p(zsels) + logPriorUniverse(zsels,selsamples_ind,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals,dzgals,wgals)
 
     log_mu = logsumexp(log_det_weights) - jnp.log(Ndraw)
     log_s2 = logsumexp(2*log_det_weights) - 2.0*jnp.log(Ndraw)
@@ -70,7 +70,7 @@ def darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
 
     log_weights = log_p_pop(m1,m2,*pop_params)
 
-    log_weights += - jnp.log(ddL_of_z(z,dL,H0,Om0)) - jnp.log(p_pe) - 2*jnp.log1p(z) + logPriorUniverse(z,samples_ind,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals)
+    log_weights += - jnp.log(ddL_of_z(z,dL,H0,Om0)) - jnp.log(p_pe) - 2*jnp.log1p(z) + logPriorUniverse(z,samples_ind,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals,dzgals,wgals)
 
     log_weights = log_weights.reshape((nEvents,nsamp))
     ll += jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights,axis=-1))

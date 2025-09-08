@@ -144,6 +144,7 @@ def load_selection_samples(file, nsamp=None, desired_pop_wt=None, far_threshold=
         pdraw_sel = pdraw_sel[detected]
         rasels = rasels[detected]
         decsels = decsels[detected]
+        print(len(m1detsels))
 
         pop_wt = pdraw_sel
 

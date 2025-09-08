@@ -29,13 +29,8 @@ def main():
         ras_ = np.array(f['TARGET_RA'])*np.pi/180
         decs_ = np.array(f['TARGET_DEC'])*np.pi/180
         zs_ = np.array(f['Z'])
-        try:
-            ddzs_ = np.array(inp['ZERR'])
-            wts_ = np.array(inp['WEIGHT'])
-        except:
-            dz = 0.033
-            ddzs_ = dz*(1+zs_)
-            wts_ = np.ones(len(zs_))
+        ddzs_ = np.array(f['ZERR'])
+        wts_ = np.array(f['WEIGHT'])
 
     ngals = len(ras_)
 

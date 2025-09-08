@@ -96,32 +96,52 @@ def logpcatalog(z, pix, H0, Om0, delta, zgals, dzgals, wgals):
 logpcatalog_vmap = jit(vmap(logpcatalog, in_axes=(0,0,None,None,None,None,None,None), out_axes=0))
 
 
-@partial(jax.jit, static_argnames=['apix'])
-def logPriorUniverse_darksirens(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals):
-    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix,apix,zgals)
-
-    logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
-
-    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals), -jnp.inf)
-
-    logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
-
-    return logprob
-
-
-@partial(jax.jit, static_argnames=['apix'])
-def logPriorUniverse_spectralsirens(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals):
-    f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix,apix,zgals)
+@partial(jax.jit, static_argnames=['apix','batch'])
+def logPriorUniverse_darksirens(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals,dzgals,wgals):
     
-    f = 0
-    logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
+    zs = jnp.array_split(z,batch)
+    ps = jnp.array_split(pix,batch)
+    
+    logprobs = []
+    for k in range(batch):
+        z = zs[k]
+        pix = ps[k]
+        
+        f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix,apix,zgals)
 
-    logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals), -jnp.inf)
+        logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
 
-    logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
+        logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals), -jnp.inf)
 
-    return logprob
+        logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
+        logprobs.append(logprob)
 
+    return jnp.concatenate(logprobs)
+
+
+@partial(jax.jit, static_argnames=['apix','batch'])
+def logPriorUniverse_spectralsirens(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals,dzgals,wgals):
+    
+    zs = jnp.array_split(z,batch)
+    ps = jnp.array_split(pix,batch)
+    
+    logprobs = []
+    for k in range(batch):
+        z = zs[k]
+        pix = ps[k]
+        
+        f, pmiss, ratio = completeness_fraction_vmap(H0,Om0,n0,z1,z50,delta,z,pix,apix,zgals)
+
+        f = 0
+        logpmiss = jnp.nan_to_num(jnp.log(pmiss), -jnp.inf)
+
+        logpcat = jnp.nan_to_num(logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals), -jnp.inf)
+
+        logprob = jnp.log( jnp.exp(jnp.log(f) + logpcat) + jnp.exp(jnp.log(1-f) + logpmiss) ) + (gamma-1)*jnp.log1p(z)
+
+        logprobs.append(logprob)
+
+    return jnp.concatenate(logprobs)
 
 @partial(jax.jit, static_argnames=['apix'])
 def logPriorUniverse_spectralsirens_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals):
@@ -134,9 +154,9 @@ def logPriorUniverse_spectralsirens_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix
     return logp
 
 
-def universe_model_parser(universe_model='darksirens'):
+def universe_model_parser(universe_model='dark_sirens'):
     
-    if universe_model=='darksirens':
+    if universe_model=='dark_sirens':
         logp = logPriorUniverse_darksirens
 
     if universe_model=='spectral_sirens':

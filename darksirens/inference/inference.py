@@ -36,6 +36,8 @@ from darksirens.gw.utils import load_gw_samples
 from darksirens.gw.utils import load_selection_samples
 from darksirens.em.utils import load_survey
 
+import corner
+
 import matplotlib
 
 import matplotlib.pyplot as plt
@@ -55,7 +57,6 @@ c=sns.color_palette('colorblind')
 jax.config.update("jax_enable_x64", True)
 jax.config.update('jax_default_matmul_precision', 'highest')
 
-from darksirens.gw.populations import pop_model_parser
 
 def str_to_bool(value):
     if value.lower() in {'false', 'f', '0', 'no', 'n'}:
@@ -74,7 +75,9 @@ def main():
     optp.add_argument("--universe_model", help="specify pop model", default='spectral_sirens_fast')
     optp.add_argument("--nsamp", type=int, default=256)
     optp.add_argument("--nsamp_sel", type=int, default=5000)
-    optp.add_argument("--emcee", type=str_to_bool, nargs='?', const=False, default=False)
+    optp.add_argument("--batch", type=int, default=1)
+    optp.add_argument("--emcee", type=str_to_bool, nargs='?', const=False, default=True)
+    optp.add_argument("--dynesty", type=str_to_bool, nargs='?', const=False, default=False)
     optp.add_argument("--numpyro", type=str_to_bool, nargs='?', const=False, default=False)
     optp.add_argument("--nlive", type=int, default=500)
     optp.add_argument("--nsteps", type=int, default=1000)
@@ -91,6 +94,7 @@ def main():
     nsteps = opts.nsteps
     nsamp = opts.nsamp
     nsamp_sel = opts.nsamp_sel
+    batch = opts.batch
     seed = opts.seed
     
     nside, ngals, zgals, dzgals, wgals = load_survey(survey_path)
@@ -125,7 +129,7 @@ def main():
         ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
                                       m1det, m2det, dL, ra, dec, p_pe, samples_ind,
                                       m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-                                      nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model)
+                                      nEvents, nsamp, Ndraw, apix, batch, zgals, dzgals, wgals, pop_model, universe_model)
         if np.isnan(ll):
             return -np.inf
         else:
@@ -143,7 +147,7 @@ def main():
         ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
                                       m1det, m2det, dL, ra, dec, p_pe, samples_ind,
                                       m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-                                      nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model)
+                                      nEvents, nsamp, Ndraw, apix, batch, zgals, dzgals, wgals, pop_model, universe_model)
         if np.isnan(ll):
             return -np.inf
         else:
@@ -172,136 +176,132 @@ def main():
         print(shape)
         choose = np.random.randint(0,shape,10000)
 
-
-        import corner
-
         dpostsamples = dpostsamples_backup[choose]
         
-#     if opts.numpyro is True:
+    if opts.numpyro is True:
         
-#         import numpyro
-#         from numpyro import distributions as dist
-#         from numpyro.infer import MCMC
-#         from numpyro.infer import NUTS
-#         from numpyro.infer.initialization import init_to_feasible, init_to_median
+        import numpyro
+        from numpyro import distributions as dist
+        from numpyro.infer import MCMC
+        from numpyro.infer import NUTS
+        from numpyro.infer.initialization import init_to_feasible, init_to_median
 
-#         seed = np.random.randint(1000)
-#         key = jax.random.PRNGKey(1000)
+        seed = np.random.randint(1000)
+        key = jax.random.PRNGKey(1000)
 
 
-#         def darksiren_model_numpyro():
+        def darksiren_model_numpyro():
 
-#             H0 = numpyro.sample("H0", dist.Uniform(20, 100))
-#             Om0 = numpyro.sample('Om0', dist.Uniform(Om0grid[0], Om0grid[-1]))
+            H0 = numpyro.sample("H0", dist.Uniform(20, 100))
+            Om0 = numpyro.sample('Om0', dist.Uniform(Om0grid[0], Om0grid[-1]))
 
-#             log10n0 = numpyro.sample('log10n0', dist.Uniform(-5.0, 0.0))
+            n0 = numpyro.sample('n0', dist.Uniform(1.0e-6, 1.0))
+            log10n0 = jnp.log10(n0)
             
-#             z1 = numpyro.sample('z1', dist.Uniform(1, 200))
-#             z50 = numpyro.sample('z50', dist.Uniform(0, 1))
-#             delta = numpyro.sample('delta', dist.Uniform(-10, 10))
-#             gamma = numpyro.sample('gamma', dist.Uniform(-10, 10))
+            z1 = numpyro.sample('z1', dist.Uniform(1, 200))
+            z50 = numpyro.sample('z50', dist.Uniform(0, 1))
+            delta = numpyro.sample('delta', dist.Uniform(-10, 10))
+            gamma = numpyro.sample('gamma', dist.Uniform(-10, 10))
             
-#             alpha = numpyro.sample('alpha', dist.Uniform(0, 6))
-#             beta = numpyro.sample('beta', dist.Uniform(0, 6))
-#             m_min = numpyro.sample('m_min', dist.Uniform(1, 10))
-#             m_max = numpyro.sample('m_max', dist.Uniform(50, 200))
-#             dm_min = numpyro.sample('dm_min', dist.Uniform(0, 1))
-#             dm_max = numpyro.sample('dm_max', dist.Uniform(0, 1))
-#             mu = numpyro.sample('mu', dist.Uniform(20, 50))
-#             sigma = numpyro.sample('sigma', dist.Uniform(1, 10))
-#             f = numpyro.sample('f', dist.Uniform(0, 1))
+            alpha = numpyro.sample('alpha', dist.Uniform(0, 6))
+            beta = numpyro.sample('beta', dist.Uniform(0, 6))
+            m_min = numpyro.sample('m_min', dist.Uniform(1, 10))
+            m_max = numpyro.sample('m_max', dist.Uniform(50, 200))
+            dm_min = numpyro.sample('dm_min', dist.Uniform(0, 1))
+            dm_max = numpyro.sample('dm_max', dist.Uniform(0, 1))
+            mu = numpyro.sample('mu', dist.Uniform(20, 50))
+            sigma = numpyro.sample('sigma', dist.Uniform(1, 10))
+            f = numpyro.sample('f', dist.Uniform(0, 1))
             
-#             cosmo_params = (H0, Om0)
-#             survey_params = (log10n0,z1,z50,delta,gamma)
-#             pop_params = (alpha,beta,m_min,m_max,dm_min,dm_max,mu,sigma,f)
+            cosmo_params = (H0, Om0)
+            survey_params = (log10n0,z1,z50,delta,gamma)
+            pop_params = (alpha,beta,m_min,m_max,dm_min,dm_max,mu,sigma,f)
 
-#             ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
-#                                           m1det, m2det, dL, ra, dec, p_pe, samples_ind,
-#                                           m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-#                                           nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model)
+            ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
+                                          m1det, m2det, dL, ra, dec, p_pe, samples_ind,
+                                          m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
+                                          nEvents, nsamp, Ndraw, apix, zgals, dzgals, wgals, pop_model, universe_model)
             
-#             ll = numpyro.deterministic('ll', ll)
+            ll = numpyro.deterministic('ll', ll)
 
-#             numpyro.factor('log_likelihood', ll)
-
-
-#         def darksiren_sample(
-#                 thinning=100,
-#                 num_warmup=10,
-#                 num_samples=100,
-#                 num_chains=1,target_accept_prob=0.9):
+            numpyro.factor('log_likelihood', ll)
 
 
-#             RNG = jax.random.PRNGKey(0)
-#             MCMC_RNG, PRIOR_RNG, _RNG = jax.random.split(RNG, num=3)
-#             kernel = NUTS(darksiren_model_numpyro, target_accept_prob=target_accept_prob, init_strategy=init_to_median())
-#             mcmc = MCMC(
-#                 kernel,
-#                 thinning=thinning,
-#                 num_warmup=num_warmup,
-#                 num_samples=num_samples,
-#                 num_chains=num_chains,
-#             )
+        def darksiren_sample(
+                thinning=100,
+                num_warmup=10,
+                num_samples=100,
+                num_chains=1,target_accept_prob=0.9):
 
-#             mcmc.run(PRIOR_RNG)
 
-#             return mcmc.get_samples()
+            RNG = jax.random.PRNGKey(0)
+            MCMC_RNG, PRIOR_RNG, _RNG = jax.random.split(RNG, num=3)
+            kernel = NUTS(darksiren_model_numpyro, target_accept_prob=target_accept_prob, init_strategy=init_to_median())
+            mcmc = MCMC(
+                kernel,
+                thinning=thinning,
+                num_warmup=num_warmup,
+                num_samples=num_samples,
+                num_chains=num_chains,
+            )
+
+            mcmc.run(PRIOR_RNG)
+
+            return mcmc.get_samples()
         
-#         samples = darksiren_sample(
-#                 thinning=1,
-#                 num_warmup=1000,
-#                 num_samples=5000,
-#                 num_chains=1,
-#                 target_accept_prob=0.3)
-#         dpostsamples = np.column_stack(samples.values())
+        samples = darksiren_sample(
+                thinning=1,
+                num_warmup=1000,
+                num_samples=5000,
+                num_chains=1,
+                target_accept_prob=0.3)
+        dpostsamples = np.column_stack(samples.values())
     
-#     else:
+    if opts.dynesty is True:
 
-#         from dynesty.utils import resample_equal
-#         from dynesty import NestedSampler, DynamicNestedSampler
+        from dynesty.utils import resample_equal
+        from dynesty import NestedSampler, DynamicNestedSampler
         
-#         nlive = opts.nlive
+        nlive = opts.nlive
 
-#         bound = 'multi'
-#         sample = 'rwalk'
-#         nprocesses = 1
-#         Dynamic = False
+        bound = 'multi'
+        sample = 'rwalk'
+        nprocesses = 1
+        Dynamic = False
 
-#         if Dynamic is True:
-#             dsampler = DynamicNestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
-#             dsampler.run_nested()
-#         else:
-#             dsampler = NestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
-#             dsampler.run_nested(dlogz=0.1)
-            
-#         import corner
+        if Dynamic is True:
+            dsampler = DynamicNestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
+            dsampler.run_nested()
+        else:
+            dsampler = NestedSampler(likelihood, prior_transform, ndims, bound=bound, sample=sample, nlive=nlive)
+            dsampler.run_nested(dlogz=0.1)
 
-#         dres = dsampler.results
+        dres = dsampler.results
 
-#         dlogZdynesty = dres.logz[-1]        # value of logZ
-#         dlogZerrdynesty = dres.logzerr[-1]  # estimate of the statistcal uncertainty on logZ
+        dlogZdynesty = dres.logz[-1]        # value of logZ
+        dlogZerrdynesty = dres.logzerr[-1]  # estimate of the statistcal uncertainty on logZ
 
-#         # output marginal likelihood
-#         print('Marginalised evidence (using dynamic sampler) is {} ± {}'.format(dlogZdynesty, dlogZerrdynesty))
+        # output marginal likelihood
+        print('Marginalised evidence (using dynamic sampler) is {} ± {}'.format(dlogZdynesty, dlogZerrdynesty))
 
-#         # get the posterior samples
-#         dweights = np.exp(dres['logwt'] - dres['logz'][-1])
-#         dpostsamples = resample_equal(dres.samples, dweights)
+        # get the posterior samples
+        dweights = np.exp(dres['logwt'] - dres['logz'][-1])
+        dpostsamples = resample_equal(dres.samples, dweights)
 
-#         print('Number of posterior samples (using dynamic sampler) is {}'.format(dpostsamples.shape[0]))
+        print('Number of posterior samples (using dynamic sampler) is {}'.format(dpostsamples.shape[0]))
 
-# #         import pickle
+    import pickle
+    import corner
 
-# #         # open a file, where you ant to store the data
-# #         file = open(filename + '-samples', 'wb')
+    # open a file, where you ant to store the data
+    #file = open(filename + '-samples', 'wb')
+    file = open(save_path + 'samples', 'wb')
 
-# #         # dump information to that file
-# #         pickle.dump(dres, file)
+    # dump information to that file
+    pickle.dump(dpostsamples, file)
 
-# #         # close the file
-# #         file.close()
-
-
+    # close the file
+    file.close()
 
     fig = corner.corner(dpostsamples, labels=labels, hist_kwargs={'density': True})#, truths=truths)#, range=ranges)
     plt.savefig(save_path+'corner.pdf')
