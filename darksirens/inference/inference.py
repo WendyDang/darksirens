@@ -99,11 +99,16 @@ def main():
     batch = opts.batch
     seed = opts.seed
     
+    print("Population Model: " + pop_model)
+    print("Universe Model:" + universe_model)
+    
     nside, ngals, zgals, dzgals, wgals = load_survey(survey_path)
         
     m1det, m2det, dL, ra, dec, p_pe, nEvents = load_gw_samples(gw_path, nsamp=nsamp)
+    print("Analyzing " + str(nEvents) + " events with " + str(nsamp) + " PE samples each.")
     
     m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, Ndraw = load_selection_samples(gwselection_path,nsamp=nsamp_sel)
+    print("Analyzing " + str(len(p_draw)) + " injections with " + str(Ndraw) + " drawn injections.")
     
     npix = hp.pixelfunc.nside2npix(nside)
     apix = hp.pixelfunc.nside2pixarea(nside)
@@ -169,10 +174,11 @@ def main():
             return ll
         
     if opts.emcee is True:
-
+        
         import emcee
-        nwalkers = 2 * ndims
+        nwalkers = 4 * ndims
 
+        print("Using emcee with (Nwalkers, Nsteps) = " + "(" + str(nwalkers) + "," + str(nsteps) + ")")
         p0 = np.random.uniform(lower_bound, upper_bound, size=(nwalkers, len(lower_bound)))
 
         sampler = emcee.EnsembleSampler(nwalkers, ndims, likelihood_emcee,

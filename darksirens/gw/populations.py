@@ -62,27 +62,16 @@ def Sfilter_high(m,m_max,dm_max):
     S_filter = jnp.where(m<m_max,S_filter,0.)
     return S_filter
 
-@jit
-def log_smooth_turnon(m, mmin, width=0.05):
-    """A function that smoothly transitions from 0 to 1.
-    :param m: The function argument.
-    :param mmin: The location around which the function transitions.
-    :param width: (optional) The fractional width of the transition.
-    """
-    dm = mmin*width
-    return np.log(1) - jnp.log1p(jnp.exp(-(m-mmin)/dm))
+# @jit
+# def log_smooth_turnon(m, mmin, width=0.05):
+#     """A function that smoothly transitions from 0 to 1.
+#     :param m: The function argument.
+#     :param mmin: The location around which the function transitions.
+#     :param width: (optional) The fractional width of the transition.
+#     """
+#     dm = mmin*width
+#     return np.log(1) - jnp.log1p(jnp.exp(-(m-mmin)/dm))
 
-@jit
-def logpm1_powerlaw(m1,m_min,m_max,alpha,dm_min,dm_max):
-    pm1 = mass**(-alpha)*jnp.exp(log_smooth_turnon(mass, m_min, width=dm_min))*jnp.exp(log_smooth_turnon(mass, m_max, width=-dm_max))
-    pm1 = pm1/jnp.trapezoid(pm1,mass)
-    return jnp.log(jnp.interp(m1,mass,pm1))
-
-@jit
-def logpm1_peak(m1,mu,sigma):
-    pm1 =  jnp.exp(-(mass - mu)**2 / (2 * sigma ** 2))
-    pm1 = pm1/jnp.trapezoid(pm1,mass)
-    return jnp.log(jnp.interp(m1,mass,pm1))
 
 @jit
 def logfq(m1,m2,beta):
@@ -174,8 +163,20 @@ def logpm1_brokenpowerlaw(m1,alpha_1, alpha_2, break_mass, m_min, dm_min, m_max,
     return jnp.log(jnp.interp(m1,mass,pm1))
 
 @jit
-def logpm1_powerlaw_peak(m1,m_min_1,m_max_1,alpha_1,dm_min_1,dm_max_1,mu,sigma,f1):
-    p1 = jnp.exp(logpm1_powerlaw(m1,m_min_1,m_max_1,alpha_1,dm_min_1,dm_max_1))
+def logpm1_powerlaw(m1,alpha,m_min,m_max,dm_min,dm_max):
+    pm1 = mass**(-alpha)*Sfilter_low(mass,m_min,dm_min)*Sfilter_high(mass,m_max,dm_max)
+    pm1 = pm1/jnp.trapezoid(pm1,mass)
+    return jnp.log(jnp.interp(m1,mass,pm1))
+
+@jit
+def logpm1_peak(m1,mu,sigma):
+    pm1 =  jnp.exp(-(mass - mu)**2 / (2 * sigma ** 2))
+    pm1 = pm1/jnp.trapezoid(pm1,mass)
+    return jnp.log(jnp.interp(m1,mass,pm1))
+
+@jit
+def logpm1_powerlaw_peak(m1,alpha,m_min,m_max,dm_min,dm_max,mu,sigma,f1):
+    p1 = jnp.exp(logpm1_powerlaw(m1,alpha,m_min,m_max,dm_min,dm_max))
     p2 = jnp.exp(logpm1_peak(m1,mu,sigma))
     
     pm1 = (1-f1)*p1 + f1*p2
@@ -200,9 +201,9 @@ def log_p_pop_mock_data(m1,m2,mu,sigma,beta):
     return log_dNdm1 + log_dNdm2 + log_fq
 
 @jit
-def log_p_pop_powerlaw_peak(m1,m2,m_min_1,m_max_1,alpha_1,dm_min_1,dm_max_1,beta,mu,sigma,f1):
-    log_dNdm1 = logpm1_powerlaw_peak(m1,m_min_1,m_max_1,alpha_1,dm_min_1,dm_max_1,mu,sigma,f1)
-    log_dNdm2 = logpm1_powerlaw_peak(m2,m_min_1,m_max_1,alpha_1,dm_min_1,dm_max_1,mu,sigma,f1)
+def log_p_pop_powerlaw_peak(m1,m2,alpha,beta,m_min,m_max,dm_min,dm_max,mu,sigma,f):
+    log_dNdm1 = logpm1_powerlaw_peak(m1,alpha,m_min,m_max,dm_min,dm_max,mu,sigma,f)
+    log_dNdm2 = logpm1_powerlaw_peak(m2,alpha,m_min,m_max,dm_min,dm_max,mu,sigma,f)
     log_fq = logfq(m1,m2,beta)
 
     return log_dNdm1 + log_dNdm2 + log_fq 
@@ -271,7 +272,7 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         beta_lo = 0
         beta_hi = 6
 
-        m_min_lo = 1
+        m_min_lo = 2
         m_min_hi = 10
 
         m_max_lo = 50
@@ -287,7 +288,7 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         f_hi = 1.0
 
         dm_lo = 0
-        dm_hi = 1
+        dm_hi = 100
 
         lower_bound = [H0_lo, Om0_lo,
                        log10n0_lo, z1_lo, z50_lo, delta_lo, gamma_lo,
@@ -298,7 +299,7 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         
         labels = [r'$H_0$', r'$\Omega_m$', 
                   '$\log_{10}n_0$','z1', 'z50', r'$\delta$',
-                  r'$\gamma$', r'$\alpha$',r'$\beta$', r'$m_{\rm max}$', r'$m_{\rm min}$', r'$dm_{\rm max}$', r'$dm_{\rm min}$', r'$\mu$', r'$\sigma$', r'$f$']
+                  r'$\gamma$', r'$\alpha$',r'$\beta$', r'$m_{\rm min}$',r'$m_{\rm max}$', r'$dm_{\rm min}$', r'$dm_{\rm max}$', r'$\mu$', r'$\sigma$', r'$f$']
         
     if pop_model=='brokenpowerlaw+2peaks':
         H0_lo = 20

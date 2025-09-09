@@ -154,15 +154,15 @@ def load_selection_samples(file, nsamp=None, desired_pop_wt=None, far_threshold=
         sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
         pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
 
-        inds = rng.choice(len(m1detsels), size=nsamp, p=sum_norm_wt)
-        m1detsels_cut = m1detsels[inds]
-        m2detsels_cut = m2detsels[inds]
-        dLsels_cut = dLsels[inds]
-        rasels_cut = rasels[inds]
-        decsels_cut = decsels[inds]
+#         inds = rng.choice(len(m1detsels), size=nsamp, p=sum_norm_wt)
+#         m1detsels_cut = m1detsels[inds]
+#         m2detsels_cut = m2detsels[inds]
+#         dLsels_cut = dLsels[inds]
+#         rasels_cut = rasels[inds]
+#         decsels_cut = decsels[inds]
 
-        pdraw_sel_cut = pdraw_wt[inds]
-        ndraw_cut = nsamp
+#         pdraw_sel_cut = pdraw_wt[inds]
+#         ndraw_cut = nsamp
         
             
-        return jnp.array(m1detsels_cut), jnp.array(m2detsels_cut), jnp.array(dLsels_cut), jnp.array(rasels_cut), jnp.array(decsels_cut), jnp.array(pdraw_sel_cut), int(ndraw_cut)
+        return jnp.array(m1detsels), jnp.array(m2detsels), jnp.array(dLsels), jnp.array(rasels), jnp.array(decsels), jnp.array(pdraw_wt), int(ndraw)

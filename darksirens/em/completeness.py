@@ -145,8 +145,8 @@ def logPriorUniverse_spectralsirens(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,batc
 
     return jnp.concatenate(logprobs)
 
-@partial(jax.jit, static_argnames=['apix'])
-def logPriorUniverse_spectralsirens_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,zgals,dzgals,wgals):
+@partial(jax.jit, static_argnames=['apix','batch'])
+def logPriorUniverse_spectralsirens_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals,dzgals,wgals):
 
     pvol = dV_of_z(zgrid, H0, Om0)*(1+zgrid)**(gamma-1)
     pvol = pvol/jnp.trapezoid(pvol,zgrid)
