@@ -1,5 +1,7 @@
 import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='0.99'
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR']='platform'
 
 import jax
 
@@ -109,6 +111,19 @@ def main():
     samples_ind = hp.pixelfunc.ang2pix(nside,np.pi/2-dec,ra)
     selsamples_ind = hp.pixelfunc.ang2pix(nside,np.pi/2-decsels,rasels)
     
+    zgals_pe = zgals[samples_ind]
+    dzgals_pe = dzgals[samples_ind]
+    wgals_pe = wgals[samples_ind]
+    
+    zgals_sel = zgals[selsamples_ind]
+    dzgals_sel = dzgals[selsamples_ind]
+    wgals_sel = wgals[selsamples_ind]
+    
+    pixels_pe = jnp.arange(len(m1det))
+    pixels_sel = jnp.arange(len(m1detsels))
+    
+    del zgals, dzgals, wgals, samples_ind, selsamples_ind, ra, dec, rasels, decsels
+    
     lower_bound, upper_bound, labels = pop_model_prior_parser(pop_model=pop_model)
 
     ndims = len(lower_bound)
@@ -127,9 +142,9 @@ def main():
         pop_params = coord[7:]
         
         ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
-                                      m1det, m2det, dL, ra, dec, p_pe, samples_ind,
-                                      m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-                                      nEvents, nsamp, Ndraw, apix, batch, zgals, dzgals, wgals, pop_model, universe_model)
+                                      m1det, m2det, dL, p_pe, pixels_pe, zgals_pe, dzgals_pe, wgals_pe,
+                                      m1detsels, m2detsels, dLsels, p_draw, pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
+                                      nEvents, nsamp, Ndraw, apix, batch, pop_model, universe_model)
         if np.isnan(ll):
             return -np.inf
         else:
@@ -145,9 +160,9 @@ def main():
         pop_params = coord[7:]
         
         ll = darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
-                                      m1det, m2det, dL, ra, dec, p_pe, samples_ind,
-                                      m1detsels, m2detsels, dLsels, rasels, decsels, p_draw, selsamples_ind,
-                                      nEvents, nsamp, Ndraw, apix, batch, zgals, dzgals, wgals, pop_model, universe_model)
+                                      m1det, m2det, dL, p_pe, pixels_pe, zgals_pe, dzgals_pe, wgals_pe,
+                                      m1detsels, m2detsels, dLsels, p_draw, pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
+                                      nEvents, nsamp, Ndraw, apix, batch, pop_model, universe_model)
         if np.isnan(ll):
             return -np.inf
         else:
