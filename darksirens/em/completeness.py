@@ -155,6 +155,53 @@ def logPriorUniverse_spectralsirens_fast(z,pix,H0,Om0,n0,z1,z50,delta,gamma,apix
 
     return logp
 
+## Multi-GPU code
+# @partial(jax.jit, static_argnames=['apix'])
+# def logprior_darksirens_batched(
+#     z, pix, H0, Om0, n0, z1, z50, delta, gamma, apix, zgals, dzgals, wgals
+# ):
+#     f, pmiss, _ = completeness_fraction_vmap(H0, Om0, n0, z1, z50, delta, z, pix, apix, zgals)
+#     logpmiss = jnp.nan_to_num(jnp.log(pmiss), neginf=-jnp.inf)
+#     logpcat  = jnp.nan_to_num(
+#         logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals),
+#         neginf=-jnp.inf
+#     )
+#     # log( f*exp(logpcat) + (1-f)*exp(logpmiss) ) in a stable way
+#     term1 = jnp.log(f) + logpcat
+#     term2 = jnp.log1p(-f) + logpmiss
+#     base  = jnp.logaddexp(term1, term2)
+#     return base + (gamma - 1.0) * jnp.log1p(z)
+
+# n_dev = jax.local_device_count()
+
+# def shard_1d(x):
+#     N = x.shape[0]
+#     pad = (-N) % n_dev
+#     if pad:
+#         x = jnp.pad(x, (0, pad))
+#     return x.reshape(n_dev, -1), N
+
+# # Explicit in_axes: 0 for sharded args, None for replicated args
+# @partial(jax.pmap,
+#     in_axes=(0, 0,  # z_s, pix_s are sharded along axis 0
+#              None, None, None, None, None, None, None, None,  # scalars
+#              None, None, None)  # catalog arrays replicated
+# )
+# def _logprior_shard(z_s, pix_s, H0, Om0, n0, z1, z50, delta, gamma, apix,
+#                     zgals, dzgals, wgals):
+#     return logprior_darksirens_batched(
+#         z_s, pix_s, H0, Om0, n0, z1, z50, delta, gamma, apix,
+#         zgals, dzgals, wgals
+#     )
+
+# def logprior_multi_gpu_pmap(z, pix, H0, Om0, n0, z1, z50, delta, gamma, apix,
+#                             zgals, dzgals, wgals):
+#     z_s, N   = shard_1d(z)
+#     pix_s, _ = shard_1d(pix)
+#     out_s = _logprior_shard(z_s, pix_s, H0, Om0, n0, z1, z50, delta, gamma, apix,
+#                             zgals, dzgals, wgals)
+#     return out_s.reshape(-1)[:N]
+
 
 def universe_model_parser(universe_model='dark_sirens'):
     

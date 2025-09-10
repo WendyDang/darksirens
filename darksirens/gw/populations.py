@@ -267,7 +267,7 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         log10n0_hi = 1.0
 
         alpha_lo = 0
-        alpha_hi = 10
+        alpha_hi = 4
 
         beta_lo = 0
         beta_hi = 6
