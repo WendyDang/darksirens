@@ -52,11 +52,12 @@ def darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
     zsels = z_of_dL(dLsels, H0, Om0)
     m1sels = m1detsels/(1+zsels)
     m2sels = m2detsels/(1+zsels)
+    qsels = m2sels/m1sels
 
-    log_det_weights = log_p_pop(m1sels,m2sels,*pop_params)
-
-    log_det_weights += - jnp.log(ddL_of_z(zsels,dLsels,H0,Om0)) - jnp.log(p_draw) - 2*jnp.log1p(zsels) + logPriorUniverse(zsels,pixels_sel,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals_sel,dzgals_sel,wgals_sel)
-
+    log_det_weights = log_p_pop(m1sels,qsels,*pop_params)
+    log_det_weights += logPriorUniverse(zsels,pixels_sel,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals_sel,dzgals_sel,wgals_sel)
+    log_det_weights += - jnp.log(ddL_of_z(zsels,dLsels,H0,Om0)) - jnp.log(p_draw) - 2*jnp.log1p(zsels)
+    
     log_mu = logsumexp(log_det_weights) - jnp.log(Ndraw)
     log_s2 = logsumexp(2*log_det_weights) - 2.0*jnp.log(Ndraw)
     log_sigma2 = logdiffexp(log_s2, 2.0*log_mu - jnp.log(Ndraw))
@@ -69,10 +70,11 @@ def darksiren_log_likelihood(cosmo_params, survey_params, pop_params,
     z = z_of_dL(dL, H0, Om0)
     m1 = m1det/(1+z)
     m2 = m2det/(1+z)
+    q = m2/m1
 
-    log_weights = log_p_pop(m1,m2,*pop_params)
-
-    log_weights += - jnp.log(ddL_of_z(z,dL,H0,Om0)) - jnp.log(p_pe) - 2*jnp.log1p(z) + logPriorUniverse(z,pixels_pe,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals_pe,dzgals_pe,wgals_pe)
+    log_weights = log_p_pop(m1,q,*pop_params)
+    log_weights += logPriorUniverse(z,pixels_pe,H0,Om0,n0,z1,z50,delta,gamma,apix,batch,zgals_pe,dzgals_pe,wgals_pe)
+    log_weights += - jnp.log(ddL_of_z(z,dL,H0,Om0)) - jnp.log(p_pe) - 2*jnp.log1p(z)
 
     log_weights = log_weights.reshape((nEvents,nsamp))
     ll += jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights,axis=-1))
