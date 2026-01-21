@@ -82,6 +82,7 @@ def main():
     optp.add_argument("--dynesty", type=str_to_bool, nargs='?', const=False, default=False)
     optp.add_argument("--numpyro", type=str_to_bool, nargs='?', const=False, default=False)
     optp.add_argument("--nlive", type=int, default=500)
+    optp.add_argument("--nwalkers", type=int, default=32)
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
 
@@ -94,6 +95,7 @@ def main():
     pop_model = opts.pop_model
     universe_model = opts.universe_model
     nsteps = opts.nsteps
+    nwalkers = opts.nwalkers
     nsamp = opts.nsamp
     nsamp_sel = opts.nsamp_sel
     batch = opts.batch
@@ -176,7 +178,7 @@ def main():
     if opts.emcee is True:
         
         import emcee
-        nwalkers = 4 * ndims
+        #nwalkers = 4 * ndims
 
         print("Using emcee with (Nwalkers, Nsteps) = " + "(" + str(nwalkers) + "," + str(nsteps) + ")")
         p0 = np.random.uniform(lower_bound, upper_bound, size=(nwalkers, len(lower_bound)))

@@ -45,7 +45,11 @@ def main():
         idx = np.where(ind == pix)[0]
         return idx
 
-    p = ProcessingPool(20)
+    num_cores = int(len(os.sched_getaffinity(0)))
+    num_threads = int(2*num_cores-2)
+    print("using multiprocessing with " + str(num_threads) + " threads")
+    
+    p = ProcessingPool(num_threads)
     results = tqdm_pathos.map(calculate_galaxies_pix, list(pixgrid))
 
     ngalaxies_ = []
