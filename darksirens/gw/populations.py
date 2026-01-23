@@ -186,18 +186,12 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         sigma_s_high = 1
 
 
-        lower_bound = [H0_lo, Om0_lo,
-                       log10n0_lo, z1_lo, z50_lo, delta_lo, gamma_low,
-                       alpha_1_low, beta_low, m_min_1_low, m_max_1_low, dm_min_1_low, mu_low, sigma_low, f1_low]
+        lower_bound = [alpha_1_low, beta_low, m_min_1_low, m_max_1_low, dm_min_1_low, mu_low, sigma_low, f1_low]
         
         
-        upper_bound = [H0_hi, Om0_hi,
-                       log10n0_hi, z1_hi, z50_hi, delta_hi, gamma_high,
-                       alpha_1_high, beta_high, m_min_1_high, m_max_1_high, dm_min_1_high, mu_high, sigma_high, f1_high]
+        upper_bound = [alpha_1_high, beta_high, m_min_1_high, m_max_1_high, dm_min_1_high, mu_high, sigma_high, f1_high]
         
-        labels = [r'$H_0$', r'$\Omega_m$', 
-                  '$\log_{10}n_0$','z1', 'z50', r'$\delta$',
-                  r'$\gamma$', r'$\alpha$',r'$\beta$', r'$m_{\rm min}$',r'$m_{\rm max}$', r'$dm_{\rm min}$', r'$\mu$', r'$\sigma$', r'$f$']
+        labels = [r'$\alpha$',r'$\beta$', r'$m_{\rm min}$',r'$m_{\rm max}$', r'$dm_{\rm min}$', r'$\mu$', r'$\sigma$', r'$f$']
         
     if pop_model=='brokenpowerlaw+2peaks':
         H0_lo = 20
