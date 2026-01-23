@@ -22,6 +22,7 @@ from darksirens.inference.likelihood import darksiren_log_likelihood
 from darksirens.gw.populations import pop_model_prior_parser
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.em.utils import load_survey
+from darksirens.em.completeness import build_binned_catalog
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -82,6 +83,9 @@ def main():
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
     optp.add_argument("--use_LSS", type=str_to_bool, nargs="?", const=True, default=True)
+    optp.add_argument("--binned_pz", type=str_to_bool, nargs="?", const=True, default=True)
+    optp.add_argument("--zbins", type=int, default=100)
+
     optp.add_argument(
         "--max_samples",
         type=int,
@@ -128,6 +132,27 @@ def main():
 
     pixels_pe = jnp.asarray(samples_ind)
     pixels_sel = jnp.asarray(selsamples_ind)
+    
+    if opts.binned_pz:
+        print("using binned pz")
+
+        # Build binned catalog once from the full survey
+        zgals_binned, dzgals_binned, wgals_binned, z_centers = build_binned_catalog(
+            zgals, dzgals, wgals, nbins=opts.zbins
+        )
+
+        # Now just index by pixels_pe / pixels_sel
+        zgals_pe = zgals_binned[pixels_pe]      # (nEvents*nsamp, nbins)
+        dzgals_pe = dzgals_binned[pixels_pe]
+        wgals_pe = wgals_binned[pixels_pe]
+
+        zgals_sel = zgals_binned[pixels_sel]    # (Ndraw, nbins)
+        dzgals_sel = dzgals_binned[pixels_sel]
+        wgals_sel = wgals_binned[pixels_sel]
+
+        z_centers_pe = z_centers
+        z_centers_sel = z_centers
+
 
     # --------------------------------------------------------
     # LSS overdensity field

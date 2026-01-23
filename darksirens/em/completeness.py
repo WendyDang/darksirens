@@ -14,6 +14,45 @@ from jax.scipy.special import expit
 
 from darksirens.utils.cosmology import dV_of_z
 
+import jax
+import jax.numpy as jnp
+from functools import partial
+
+def build_binned_catalog(zgals, dzgals, wgals, nbins=100):
+    # zgals, dzgals, wgals: (npix, maxgals)
+
+    npix, maxgals = zgals.shape
+
+    # Global z-range from non-padded galaxies (wgals > 0)
+    mask = wgals > 0
+    zmin = jnp.min(jnp.where(mask, zgals, jnp.inf))
+    zmax = jnp.max(jnp.where(mask, zgals, -jnp.inf))
+
+    edges = jnp.linspace(zmin, zmax, nbins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    def per_pixel(z_row, dz_row, w_row):
+        # z_row, dz_row, w_row: (maxgals,)
+
+        # Ignore padded galaxies via weights (w=0)
+        # Assign each galaxy to a bin
+        bin_idx = jnp.digitize(z_row, edges) - 1
+        bin_idx = jnp.clip(bin_idx, 0, nbins - 1)
+
+        # Weighted sums per bin
+        W = jax.ops.segment_sum(w_row, bin_idx, nbins)
+        Z = jax.ops.segment_sum(w_row * z_row, bin_idx, nbins)
+        S = jax.ops.segment_sum(w_row * dz_row, bin_idx, nbins)
+
+        z_bin = jnp.where(W > 0, Z / W, centers)
+        sig_bin = jnp.where(W > 0, S / W, 0.03 * (1 + centers))
+
+        return z_bin, sig_bin, W
+
+    z_bin, sig_bin, W = jax.vmap(per_pixel, in_axes=(0, 0, 0))(zgals, dzgals, wgals)
+    return z_bin, sig_bin, W, centers
+
+
 # ------------------------------------------------------------
 # Global redshift grid
 # ------------------------------------------------------------
@@ -115,19 +154,37 @@ completeness_fraction_vmap = jit(
 # ------------------------------------------------------------
 # Catalog prior
 # ------------------------------------------------------------
+LOG_SQRT_2PI = 0.5 * jnp.log(2 * jnp.pi)
+
 @jit
 def logpcatalog(z, pix, H0, Om0, delta, zgals, dzgals, wgals):
-    zs = zgals[pix]
-    sig = dzgals[pix]
-    w = wgals[pix] * dV_of_z(zs, H0, Om0) * (1 + zs)**(delta - 1)
-    w = w / jnp.sum(w)
-    return logsumexp(jnp.log(w) + norm.logpdf(z, zs, sig))
+    # Extract galaxy data for this pixel
+    zs = zgals[pix]          # (Ng,)
+    sig = dzgals[pix]        # (Ng,)
+    w   = wgals[pix]         # (Ng,)
+
+    # Compute log-weights including cosmology + LSS factor
+    log_w = (
+        jnp.log(w + 1e-300)
+        + jnp.log(dV_of_z(zs, H0, Om0))
+        + (delta - 1.0) * jnp.log1p(zs)
+    )
+
+    # Gaussian log-kernel: log N(z | zs, sig)
+    log_norm = -jnp.log(sig) - LOG_SQRT_2PI
+    log_kernel = log_norm - 0.5 * ((z - zs) / sig)**2
+
+    # Mixture log-probability
+    return logsumexp(log_w + log_kernel)
 
 logpcatalog_vmap = jit(
-    vmap(logpcatalog,
-         in_axes=(0, 0, None, None, None, None, None, None),
-         out_axes=0)
+    vmap(
+        logpcatalog,
+        in_axes=(0, 0, None, None, None, None, None, None),
+        out_axes=0
+    )
 )
+
 
 # ------------------------------------------------------------
 # Universe prior (unified)
