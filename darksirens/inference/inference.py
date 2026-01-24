@@ -147,8 +147,8 @@ def main():
 
     # Cosmology parameters
     cosmo_labels = ["H0", "Om0"]
-    cosmo_lower = [20.0, 0.05]
-    cosmo_upper = [120.0, 0.6]
+    cosmo_lower = [20.0, Om0Planck-0.1]
+    cosmo_upper = [120.0, Om0Planck+0.1]
 
     labels = cosmo_labels + pop_labels + survey_labels
     lower_bound = np.array(cosmo_lower + list(pop_lower) + survey_lower)

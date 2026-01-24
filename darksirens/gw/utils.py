@@ -117,7 +117,6 @@ def load_gw_samples(gw_path, nsamp=64):
 
 def load_selection_samples(
     file,
-    nsamp=None,
     far_threshold=1.0,
     rng=None,
 ):
@@ -253,36 +252,21 @@ def load_selection_samples(
     # ------------------------------------------------------------
     # Restrict to detected injections
     # ------------------------------------------------------------
-    m1det_all = m1det_all[detected]
-    m2det_all = m2det_all[detected]
-    dL_all    = dL_all[detected]
-    ra_all    = ra_all[detected]
-    dec_all   = dec_all[detected]
-    pdraw_all = pdraw_all[detected]
+    m1detsels = m1det_all[detected]
+    m2detsels = m2det_all[detected]
+    dLsels    = dL_all[detected]
+    rasels    = ra_all[detected]
+    decsels   = dec_all[detected]
+    pdraw_sel = pdraw_all[detected]
 
-    Ndet = len(m1det_all)
+    Ndet = len(m1detsels)
     
-    pop_wt = pdraw_all
-    unnorm_wt = pop_wt/pdraw_all
+    pop_wt = pdraw_sel
+    unnorm_wt = pop_wt/pdraw_sel
     sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
     pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
-
-    # ------------------------------------------------------------
-    # Subsample detected injections if nsamp is given
-    # ------------------------------------------------------------
-    if nsamp is not None and nsamp < Ndet:
-        inds = rng.choice(Ndet, size=nsamp, p=sum_norm_wt, replace=False)
-        ndraw_cut = nsamp
-    else:
-        inds = np.arange(Ndet)
-        ndraw_cut = Ndet
-
-    m1detsels = m1det_all[inds]
-    m2detsels = m2det_all[inds]
-    dLsels    = dL_all[inds]
-    rasels    = ra_all[inds]
-    decsels   = dec_all[inds]
-    pdraw_sel = pdraw_all[inds]
+    
+    print(pdraw_wt.shape, ndraw, pdraw_wt.sum())
 
     return (
         jnp.array(m1detsels),
@@ -290,7 +274,7 @@ def load_selection_samples(
         jnp.array(dLsels),
         jnp.array(rasels),
         jnp.array(decsels),
-        jnp.array(pdraw_sel),
-        ndraw_cut,
+        jnp.array(pdraw_wt),
+        ndraw
     )
 

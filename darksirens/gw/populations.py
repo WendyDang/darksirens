@@ -146,11 +146,11 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         z50_lo = 0
         z50_hi = 1
         
-        delta_lo = -50
-        delta_hi = 50
+        delta_lo = -10
+        delta_hi = 10
         
-        gamma_low = -6
-        gamma_high = 6
+        gamma_low = -10
+        gamma_high = 10
 
         m_min_1_low = 2
         m_min_1_high = 10

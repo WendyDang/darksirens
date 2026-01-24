@@ -99,8 +99,7 @@ def darksiren_log_likelihood(
     log_sigma2 = logdiffexp(log_s2, 2*log_mu - jnp.log(Ndraw))
     Neff = jnp.exp(2*log_mu - log_sigma2)
 
-    # disable Neff guard for now
-    ll = 0.0
+    ll = jnp.where((Neff <= 5 * nEvents), -jnp.inf, 0)
     ll += -nEvents*log_mu + nEvents*(3+nEvents)/(2*Neff)
 
     # -----------------------------
