@@ -22,7 +22,6 @@ from darksirens.inference.likelihood import darksiren_log_likelihood
 from darksirens.gw.populations import pop_model_prior_parser
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.em.utils import load_survey
-from darksirens.em.completeness import build_binned_catalog
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -30,6 +29,9 @@ jax.config.update("jax_default_matmul_precision", "highest")
 sns.set_context("talk")
 sns.set_style("ticks")
 sns.set_palette("colorblind")
+
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # ------------------------------------------------------------
 # LSS helpers
@@ -73,7 +75,6 @@ def main():
     optp.add_argument("--pop_model", default="powerlaw+peak")
     optp.add_argument("--universe_model", default="dark_sirens_LSS")
     optp.add_argument("--nsamp", type=int, default=256)
-    optp.add_argument("--nsamp_sel", type=int, default=5000)
     optp.add_argument("--batch", type=int, default=1)
     optp.add_argument("--emcee", type=str_to_bool, nargs="?", const=False, default=False)
     optp.add_argument("--dynesty", type=str_to_bool, nargs="?", const=False, default=False)
@@ -83,15 +84,7 @@ def main():
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
     optp.add_argument("--use_LSS", type=str_to_bool, nargs="?", const=True, default=True)
-    optp.add_argument("--binned_pz", type=str_to_bool, nargs="?", const=True, default=True)
-    optp.add_argument("--zbins", type=int, default=100)
-
-    optp.add_argument(
-        "--max_samples",
-        type=int,
-        default=1_000_000,
-        help="Maximum number of likelihood evaluations for JAXNS."
-    )
+    optp.add_argument("--max_samples", type=int, default=1_000_000, help="Maximum number of likelihood calls for JAXNS.")
 
     opts = optp.parse_args()
 
@@ -113,8 +106,7 @@ def main():
         decsels,
         p_draw,
         Ndraw,
-    ) = load_selection_samples(opts.gwselection_path, nsamp=opts.nsamp_sel)
-    print(f"Analyzing {len(p_draw)} injections with {Ndraw} drawn injections.")
+    ) = load_selection_samples(opts.gwselection_path)
 
     npix = hp.nside2npix(nside)
     apix = hp.nside2pixarea(nside)
@@ -132,27 +124,6 @@ def main():
 
     pixels_pe = jnp.asarray(samples_ind)
     pixels_sel = jnp.asarray(selsamples_ind)
-    
-    if opts.binned_pz:
-        print("using binned pz")
-
-        # Build binned catalog once from the full survey
-        zgals_binned, dzgals_binned, wgals_binned, z_centers = build_binned_catalog(
-            zgals, dzgals, wgals, nbins=opts.zbins
-        )
-
-        # Now just index by pixels_pe / pixels_sel
-        zgals_pe = zgals_binned[pixels_pe]      # (nEvents*nsamp, nbins)
-        dzgals_pe = dzgals_binned[pixels_pe]
-        wgals_pe = wgals_binned[pixels_pe]
-
-        zgals_sel = zgals_binned[pixels_sel]    # (Ndraw, nbins)
-        dzgals_sel = dzgals_binned[pixels_sel]
-        wgals_sel = wgals_binned[pixels_sel]
-
-        z_centers_pe = z_centers
-        z_centers_sel = z_centers
-
 
     # --------------------------------------------------------
     # LSS overdensity field
