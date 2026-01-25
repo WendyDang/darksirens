@@ -141,9 +141,9 @@ def main():
     pop_lower, pop_upper, pop_labels = pop_model_prior_parser(pop_model=opts.pop_model)
 
     # Survey hyperparameters (including LSS)
-    survey_labels = ["log10n0", "z1", "z50", "delta", "gamma", "b_miss", "alpha"]
-    survey_lower = [-6.0, 0.1, 0.0, -5.0, -5.0, 0.0, 0.0]
-    survey_upper = [0.0, 50.0, 1.0, 5.0, 5.0, 5.0, 1.0]
+    survey_labels = ["log10n0", "z50", "w", "delta", "gamma", "b_miss", "alpha"]
+    survey_lower = [-10.0, 0.0, 0.01, -3.0, -10.0, 0.0, 0.0]
+    survey_upper = [10.0, 1.0, 1.0, 3.0, 10.0, 5.0, 1.0]
 
     # Cosmology parameters
     cosmo_labels = ["H0", "Om0"]
@@ -162,7 +162,7 @@ def main():
     # --------------------------------------------------------
     cosmo_params = (70.0, 0.3)
     pop_params = (2.0, 1.0, 5.0, 80.0, 0.5, 35.0, 5.0, 0.1)
-    survey_params = (-2.5, 20.0, 0.5, 1.5, 2.0,
+    survey_params = (-2.5, 0.5, 0.05, 1.5, 2.0,
                      1.0 if opts.use_LSS else 0.0,
                      1.0 if opts.use_LSS else 0.0)
 

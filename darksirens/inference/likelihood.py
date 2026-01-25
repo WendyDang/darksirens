@@ -58,12 +58,12 @@ def darksiren_log_likelihood(
     raw_logPriorUniverse = universe_model_parser(universe_model=universe_model)
 
     def logPriorUniverse_safe(z, pix,
-                              H0, Om0, n0, z1, z50, delta, gamma,
+                              H0, Om0, n0, z50, w, delta, gamma,
                               apix, zgals, dzgals, wgals,
                               delta_g_pix_z, b_miss, alpha):
         lp = raw_logPriorUniverse(
             z, pix,
-            H0, Om0, n0, z1, z50, delta, gamma,
+            H0, Om0, n0, z50, w, delta, gamma,
             apix, zgals, dzgals, wgals,
             delta_g_pix_z, b_miss, alpha
         )
@@ -73,7 +73,7 @@ def darksiren_log_likelihood(
 
     # unpack parameters
     H0, Om0 = cosmo_params
-    log10n0, z1, z50, delta, gamma, b_miss, alpha = survey_params
+    log10n0, z50, w, delta, gamma, b_miss, alpha = survey_params
     n0 = 10**log10n0
 
     # -----------------------------
@@ -87,7 +87,7 @@ def darksiren_log_likelihood(
     log_det_weights = log_p_pop(m1sels, qsels, *pop_params)
     log_det_weights += logPriorUniverse_safe(
         zsels, pixels_sel,
-        H0, Om0, n0, z1, z50, delta, gamma,
+        H0, Om0, n0, z50, w, delta, gamma,
         apix, zgals_sel, dzgals_sel, wgals_sel,
         delta_g_pix_z, b_miss, alpha
     )
@@ -113,7 +113,7 @@ def darksiren_log_likelihood(
     log_weights = log_p_pop(m1, q, *pop_params)
     log_weights += logPriorUniverse_safe(
         z, pixels_pe,
-        H0, Om0, n0, z1, z50, delta, gamma,
+        H0, Om0, n0, z50, w, delta, gamma,
         apix, zgals_pe, dzgals_pe, wgals_pe,
         delta_g_pix_z, b_miss, alpha
     )

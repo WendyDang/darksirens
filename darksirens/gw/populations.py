@@ -155,11 +155,11 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         m_min_1_low = 2
         m_min_1_high = 10
 
-        m_max_1_low = 30
+        m_max_1_low = 50
         m_max_1_high = 100
 
         alpha_1_low = -4
-        alpha_1_high = 12
+        alpha_1_high = 6
 
         dm_min_1_low = 0
         dm_min_1_high = 10
@@ -174,7 +174,7 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         sigma_high = 10
 
         f1_low = 0
-        f1_high = 1
+        f1_high = 0.15
 
         f2_low = 0
         f2_high = 1

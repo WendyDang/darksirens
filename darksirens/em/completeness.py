@@ -11,6 +11,7 @@ from functools import partial
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
 from jax.scipy.special import expit
+from jax.nn import sigmoid
 
 from darksirens.utils.cosmology import dV_of_z
 
@@ -46,15 +47,17 @@ Ngals_expected_lessthanz_vmap = jit(
 # ------------------------------------------------------------
 # Optional logistic high‑z rolloff
 # ------------------------------------------------------------
-@jit
-def Pcomplete0(z, z1, z50):
-    return expit(-z1 * (z / z50) + z1)
+from jax.nn import sigmoid
+
+def Pcomplete0(z, z50, w):
+    w = jnp.clip(w, 1e-6, None)
+    return sigmoid((z50 - z) / w)
 
 # ------------------------------------------------------------
 # LSS completeness (unified: alpha=0 → isotropic)
 # ------------------------------------------------------------
 @partial(jit, static_argnames=['apix'])
-def completeness_fraction(H0, Om0, n0, z1, z50, delta,
+def completeness_fraction(H0, Om0, n0, z50, w, delta,
                           z, pix, apix, zgals,
                           delta_g_pix_z, b_miss, alpha):
     """
@@ -68,7 +71,7 @@ def completeness_fraction(H0, Om0, n0, z1, z50, delta,
     Nobs = Ngals_lessthanz_vmap(zgrid, pix, zgals)
 
     C_iso = jnp.clip(Nobs / Nexp, 0.0, 1.0)
-    C_iso = C_iso * Pcomplete0(zgrid, z1, z50)
+    C_iso = C_iso * Pcomplete0(zgrid, z50, w)
 
     # 2. Volume term
     pvol = dV_of_z(zgrid, H0, Om0) * (1 + zgrid)**(delta - 1)
@@ -133,7 +136,7 @@ logpcatalog_vmap = jit(
 # Universe prior (unified)
 # ------------------------------------------------------------
 @partial(jit, static_argnames=['apix'])
-def logPriorUniverse(z, pix, H0, Om0, n0, z1, z50,
+def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
                      delta, gamma, apix,
                      zgals, dzgals, wgals,
                      delta_g_pix_z, b_miss, alpha):
@@ -143,7 +146,7 @@ def logPriorUniverse(z, pix, H0, Om0, n0, z1, z50,
     """
 
     f, pmiss, _ = completeness_fraction_vmap(
-        H0, Om0, n0, z1, z50, delta,
+        H0, Om0, n0, z50, w, delta,
         z, pix, apix, zgals,
         delta_g_pix_z, b_miss, alpha
     )
@@ -164,14 +167,14 @@ def logPriorUniverse(z, pix, H0, Om0, n0, z1, z50,
 
 
 @partial(jit, static_argnames=['apix'])
-def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z1, z50,
+def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
                                     delta, gamma, apix, zgals, dzgals, wgals,
                                     delta_g_pix_z, b_miss, alpha):
     """
     Same structure, but with f=0 (no catalog term in the mixture).
     """
     f, pmiss, _ = completeness_fraction_vmap(
-        H0, Om0, n0, z1, z50, delta,
+        H0, Om0, n0, z50, w, delta,
         z, pix, apix, zgals,
         delta_g_pix_z, b_miss, alpha
     )
@@ -195,7 +198,7 @@ def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z1, z50,
 
 
 @partial(jit, static_argnames=['apix'])
-def logPriorUniverse_spectralsirens_fast(z, pix, H0, Om0, n0, z1, z50,
+def logPriorUniverse_spectralsirens_fast(z, pix, H0, Om0, n0, z50, w,
                                          delta, gamma, apix, zgals, dzgals, wgals,
                                          delta_g_pix_z, b_miss, alpha):
     """
