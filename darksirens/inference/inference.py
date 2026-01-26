@@ -13,15 +13,22 @@ import healpy as hp
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pickle
+import warnings
 
 from argparse import ArgumentParser
 
 from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
 from darksirens.inference.likelihood import darksiren_log_likelihood
-from darksirens.gw.populations import pop_model_prior_parser
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.em.utils import load_survey
+
+from darksirens.inference.sampling import run_sampler
+from darksirens.inference.prior import (
+    build_parameter_space,
+    get_fixed_population_params,
+    make_prior_transform,
+)
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -30,7 +37,6 @@ sns.set_context("talk")
 sns.set_style("ticks")
 sns.set_palette("colorblind")
 
-import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # ------------------------------------------------------------
@@ -76,15 +82,27 @@ def main():
     optp.add_argument("--universe_model", default="dark_sirens_LSS")
     optp.add_argument("--nsamp", type=int, default=256)
     optp.add_argument("--batch", type=int, default=1)
+
     optp.add_argument("--emcee", type=str_to_bool, nargs="?", const=False, default=False)
     optp.add_argument("--dynesty", type=str_to_bool, nargs="?", const=False, default=False)
     optp.add_argument("--jaxns", type=str_to_bool, nargs="?", const=True, default=False)
+
     optp.add_argument("--nlive", type=int, default=1000)
     optp.add_argument("--nwalkers", type=int, default=32)
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
     optp.add_argument("--use_LSS", type=str_to_bool, nargs="?", const=True, default=True)
-    optp.add_argument("--max_samples", type=int, default=1_000_000, help="Maximum number of likelihood calls for JAXNS.")
+    optp.add_argument("--max_samples", type=int, default=1_000_000,
+                      help="Maximum number of likelihood calls for JAXNS.")
+
+    optp.add_argument(
+        "--fix_population",
+        type=str_to_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Fix population parameters instead of sampling them."
+    )
 
     opts = optp.parse_args()
 
@@ -136,38 +154,26 @@ def main():
         delta_g_pix_z = jnp.zeros((npix, len(zgrid)))
 
     # --------------------------------------------------------
-    # Priors: population + survey + cosmology
+    # Priors and parameter space
     # --------------------------------------------------------
-    pop_lower, pop_upper, pop_labels = pop_model_prior_parser(pop_model=opts.pop_model)
+    labels, lower_bound, upper_bound, n_pop_eff, pop_labels, survey_labels, cosmo_labels = \
+        build_parameter_space(opts.pop_model, opts.fix_population)
 
-    # Survey hyperparameters (including LSS)
-    survey_labels = ["log10n0", "z50", "w", "delta", "gamma", "b_miss", "alpha"]
-    survey_lower = [-10.0, 0.0, 0.01, -3.0, -10.0, 0.0, 0.0]
-    survey_upper = [10.0, 1.0, 1.0, 3.0, 10.0, 5.0, 1.0]
-
-    # Cosmology parameters
-    cosmo_labels = ["H0", "Om0"]
-    cosmo_lower = [20.0, Om0Planck-0.1]
-    cosmo_upper = [120.0, Om0Planck+0.1]
-
-    labels = cosmo_labels + pop_labels + survey_labels
-    lower_bound = np.array(cosmo_lower + list(pop_lower) + survey_lower)
-    upper_bound = np.array(cosmo_upper + list(pop_upper) + survey_upper)
-
+    pop_params_fid = get_fixed_population_params(opts.pop_model)
+    prior_transform = make_prior_transform(lower_bound, upper_bound)
     ndims = len(labels)
-    n_pop = len(pop_labels)
 
     # --------------------------------------------------------
     # Fiducial likelihood check
     # --------------------------------------------------------
-    cosmo_params = (70.0, 0.3)
-    pop_params = (2.0, 1.0, 5.0, 80.0, 0.5, 35.0, 5.0, 0.1)
-    survey_params = (-2.5, 0.5, 0.05, 1.5, 2.0,
-                     1.0 if opts.use_LSS else 0.0,
-                     1.0 if opts.use_LSS else 0.0)
+    cosmo_params_fid = (70.0, 0.3)
+    pop_params_fid_ll = np.array(pop_params_fid)
+    survey_params_fid = (-2.5, 0.5, 0.05, 1.5, 2.0,
+                         1.0 if opts.use_LSS else 0.0,
+                         1.0 if opts.use_LSS else 0.0)
 
     ll_fid = darksiren_log_likelihood(
-        cosmo_params, survey_params, pop_params,
+        cosmo_params_fid, survey_params_fid, pop_params_fid_ll,
         m1det, m2det, dL, p_pe, pixels_pe,
         zgals_pe, dzgals_pe, wgals_pe,
         m1detsels, m2detsels, dLsels, p_draw,
@@ -179,21 +185,21 @@ def main():
     print("Fiducial log-likelihood:", float(ll_fid))
 
     # --------------------------------------------------------
-    # Likelihood wrappers
+    # Likelihood for samplers
     # --------------------------------------------------------
-    def prior_transform(theta):
-        return tuple(
-            theta[i] * (upper_bound[i] - lower_bound[i]) + lower_bound[i]
-            for i in range(ndims)
-        )
-
     def likelihood(coord):
+        coord = np.asarray(coord)
         H0, Om0 = coord[:2]
-        pop_params = coord[2:2+n_pop]
-        survey_params = coord[2+n_pop:]
+
+        if opts.fix_population:
+            pop_params_loc = pop_params_fid
+            survey_params_loc = coord[2:]
+        else:
+            pop_params_loc = coord[2:2 + n_pop_eff]
+            survey_params_loc = coord[2 + n_pop_eff:]
 
         ll = darksiren_log_likelihood(
-            (H0, Om0), survey_params, pop_params,
+            (H0, Om0), survey_params_loc, pop_params_loc,
             m1det, m2det, dL, p_pe, pixels_pe,
             zgals_pe, dzgals_pe, wgals_pe,
             m1detsels, m2detsels, dLsels, p_draw,
@@ -204,174 +210,47 @@ def main():
         )
         return -np.inf if np.isnan(ll) else ll
 
-    def likelihood_emcee(coord):
-        if np.any(coord < lower_bound) or np.any(coord > upper_bound):
-            return -np.inf
-
-        return likelihood(coord)
-
     # --------------------------------------------------------
-    # Samplers
+    # Choose sampler
     # --------------------------------------------------------
-    dpostsamples = None
-
-    # --------------------------------------------------------
-    # JAXNS Sampler (API for JAXNS >= 3.x)
-    # --------------------------------------------------------
+    method = None
     if opts.jaxns:
-        import tensorflow_probability.substrates.jax as tfp
-        tfpd = tfp.distributions
+        method = "jaxns"
+    elif opts.dynesty:
+        method = "dynesty"
+    elif opts.emcee:
+        method = "emcee"
 
-        from jaxns import NestedSampler
-        from jaxns.framework.model import Model
-        from jaxns.framework.prior import Prior
+    if method is None:
+        print("No sampler selected (use --jaxns / --dynesty / --emcee).")
+        return
 
-        print(f"Running JAXNS with {opts.nlive} live points")
-
-        # ----------------------------------------------------
-        # PRIOR MODEL (generator)
-        # ----------------------------------------------------
-        def prior_model():
-            # Cosmology
-            H0 = yield Prior(
-                tfpd.Uniform(low=lower_bound[0], high=upper_bound[0]),
-                name="H0"
-            )
-            Om0 = yield Prior(
-                tfpd.Uniform(low=lower_bound[1], high=upper_bound[1]),
-                name="Om0"
-            )
-
-            # Population parameters
-            pop_vals = []
-            for i, name in enumerate(pop_labels):
-                p = yield Prior(
-                    tfpd.Uniform(
-                        low=lower_bound[2 + i],
-                        high=upper_bound[2 + i]
-                    ),
-                    name=name
-                )
-                pop_vals.append(p)
-
-            # Survey parameters
-            survey_vals = []
-            for j, name in enumerate(survey_labels):
-                idx = 2 + n_pop + j
-                s = yield Prior(
-                    tfpd.Uniform(
-                        low=lower_bound[idx],
-                        high=upper_bound[idx]
-                    ),
-                    name=name
-                )
-                survey_vals.append(s)
-
-            return (H0, Om0), jnp.array(pop_vals), jnp.array(survey_vals)
-
-        # ----------------------------------------------------
-        # LIKELIHOOD WRAPPER
-        # ----------------------------------------------------
-        def log_likelihood(cosmo_params, pop_params, survey_params):
-            return darksiren_log_likelihood(
-                cosmo_params,
-                survey_params,
-                pop_params,
-                m1det, m2det, dL, p_pe, pixels_pe,
-                zgals_pe, dzgals_pe, wgals_pe,
-                m1detsels, m2detsels, dLsels, p_draw,
-                pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
-                nEvents, opts.nsamp, Ndraw, apix, opts.batch,
-                opts.pop_model, opts.universe_model,
-                delta_g_pix_z
-            )
-
-        # ----------------------------------------------------
-        # BUILD MODEL
-        # ----------------------------------------------------
-        model = Model(
-            prior_model=prior_model,
-            log_likelihood=log_likelihood
-        )
-
-        # Optional sanity check
-        # model.sanity_check(key=jax.random.PRNGKey(0), S=32)
-
-        # ----------------------------------------------------
-        # RUN NESTED SAMPLING
-        # ----------------------------------------------------
-        ns = NestedSampler(
-            model=model,
-            num_live_points=opts.nlive,
-            max_samples=opts.max_samples,
-            verbose=True
-        )
-
-
-        key = jax.random.PRNGKey(opts.seed)
-        termination_reason, state = ns(key)
-        results = ns.to_results(termination_reason, state)
-
-        # ----------------------------------------------------
-        # EXTRACT POSTERIOR SAMPLES
-        # ----------------------------------------------------
-        # results.samples_x is a dict of named variables
-        posterior = results.samples_x
-
-        # Convert to your dynesty/emcee-style array
-        dpostsamples = jnp.column_stack(
-            [posterior[name] for name in labels]
-        )
-
-        print("JAXNS sampling complete.")
-
-
-    if opts.emcee:
-        import emcee
-        nwalkers = opts.nwalkers
-        nsteps = opts.nsteps
-
-        print(f"Running emcee: {nwalkers} walkers, {nsteps} steps")
-        p0 = np.random.uniform(lower_bound, upper_bound, size=(nwalkers, ndims))
-
-        sampler = emcee.EnsembleSampler(
-            nwalkers, ndims, likelihood_emcee,
-            moves=[(emcee.moves.DEMove(), 0.8),
-                   (emcee.moves.DESnookerMove(), 0.2)]
-        )
-        sampler.run_mcmc(p0, nsteps, progress=True)
-
-        chain = sampler.flatchain
-        half = chain.shape[0] // 2
-        dpostsamples = chain[half:]
-
-    if opts.dynesty:
-        from dynesty.utils import resample_equal
-        from dynesty import NestedSampler
-
-        sampler = NestedSampler(
-            likelihood, prior_transform, ndims,
-            bound="multi", sample="rwalk", nlive=opts.nlive
-        )
-        sampler.run_nested(dlogz=0.1)
-        res = sampler.results
-
-        weights = np.exp(res["logwt"] - res["logz"][-1])
-        dpostsamples = resample_equal(res.samples, weights)
+    print(f"Running sampler: {method}")
+    samples = run_sampler(
+        method=method,
+        likelihood=likelihood,
+        prior_transform=prior_transform,
+        labels=labels,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+        opts=opts
+    )
 
     # --------------------------------------------------------
     # Save results
     # --------------------------------------------------------
-    if dpostsamples is not None:
+    if samples is not None:
+        os.makedirs(opts.save_path, exist_ok=True)
+
         with open(os.path.join(opts.save_path, "samples.pkl"), "wb") as f:
-            pickle.dump(dpostsamples, f)
+            pickle.dump(samples, f)
 
         import corner
-        fig = corner.corner(dpostsamples, labels=labels)
+        fig = corner.corner(samples, labels=labels)
         fig.savefig(os.path.join(opts.save_path, "corner.pdf"))
         print("Saved posterior samples and corner plot.")
     else:
-        print("No sampler was run.")
+        print("No samples returned from sampler.")
 
 
 if __name__ == "__main__":
