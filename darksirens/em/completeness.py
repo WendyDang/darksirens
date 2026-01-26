@@ -12,6 +12,7 @@ from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
 from jax.scipy.special import expit
 from jax.nn import sigmoid
+import healpy as hp
 
 from darksirens.utils.cosmology import dV_of_z
 
@@ -43,6 +44,37 @@ Ngals_expected_lessthanz_vmap = jit(
          in_axes=(0, None, None, None, None, None),
          out_axes=0)
 )
+
+# ------------------------------------------------------------
+# LSS helpers for cumulative counts on zgrid
+# ------------------------------------------------------------
+@jit
+def Ngals_lessthanz_grid(pix, zgals):
+    zs = zgals[pix]
+    mask = (zs[None, :] < zgrid[:, None])
+    return mask.sum(axis=1)
+
+Ngals_lessthanz_grid_vmap = jit(
+    vmap(Ngals_lessthanz_grid, in_axes=(0, None), out_axes=0)
+)
+
+@jit
+def overdensity_from_counts(Ncum_pix_z):
+    Nmean_z = jnp.mean(Ncum_pix_z, axis=0)
+    Nmean_z = jnp.where(Nmean_z > 0.0, Nmean_z, 1.0)
+    return (Ncum_pix_z - Nmean_z[None, :]) / Nmean_z[None, :]
+
+def compute_LSS_overdensity(zgals, nside):
+    """
+    Computes δ_g(pix, z) on the global zgrid for all pixels.
+    """
+    npix = hp.nside2npix(nside)
+    pix_indices = jnp.arange(npix)
+
+    Ncum_pix_z = Ngals_lessthanz_grid_vmap(pix_indices, zgals)
+    delta_g_pix_z = overdensity_from_counts(Ncum_pix_z)
+
+    return delta_g_pix_z
 
 # ------------------------------------------------------------
 # Optional logistic high‑z rolloff
