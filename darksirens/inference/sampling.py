@@ -27,32 +27,44 @@ def run_sampler(method, likelihood, prior_transform, labels,
         from jaxns.framework.model import Model
         from jaxns.framework.prior import Prior
 
-        # Build prior model
+        ndim = len(labels)
+
+        # Prior model: returns a vector theta of shape (ndim,)
         def prior_model():
+            params = []
             for i, name in enumerate(labels):
-                low = lower_bound[i]
-                high = upper_bound[i]
-                yield Prior(tfpd.Uniform(low=low, high=high), name=name)
+                low = float(lower_bound[i])
+                high = float(upper_bound[i])
+                x = yield Prior(tfpd.Uniform(low=low, high=high), name=name)
+                params.append(x)
+            theta = jnp.stack(params)
+            return theta
 
-        # Likelihood wrapper
-        def log_likelihood(*coords):
-            coord = jnp.array(coords)
-            return likelihood(coord)
+        # Likelihood: takes that vector theta
+        def log_likelihood(theta):
+            theta = jnp.asarray(theta)
+            return likelihood(theta)
 
-        model = Model(prior_model=prior_model,
-                      log_likelihood=log_likelihood)
+        model = Model(
+            prior_model=prior_model,
+            log_likelihood=log_likelihood,
+        )
 
-        ns = NestedSampler(model=model,
-                           num_live_points=opts.nlive,
-                           max_samples=opts.max_samples,
-                           verbose=True)
+        ns = NestedSampler(
+            model=model,
+            num_live_points=opts.nlive,
+            max_samples=opts.max_samples,
+            verbose=True,
+        )
 
         key = jax.random.PRNGKey(opts.seed)
         term, state = ns(key)
         results = ns.to_results(term, state)
 
-        posterior = results.samples_x
+        posterior = results.samples  # dict of arrays
         samples = jnp.column_stack([posterior[name] for name in labels])
+        return samples
+
 
     # --------------------------------------------------------
     # dynesty
