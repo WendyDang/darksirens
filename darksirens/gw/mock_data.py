@@ -10,8 +10,10 @@ import h5py
 
 from tqdm import tqdm
 from scipy.stats import multivariate_normal
+from jax import random
 
 from darksirens.utils.cosmology import *
+from darksirens.gw.populations import *
 
 def main():
 
@@ -31,9 +33,9 @@ def main():
     seed = opts.seed
 
     with h5py.File(survey_path, 'r') as f:
-        ra_gal = np.asarray(f['ra_gal'])*np.pi/180
-        dec_gal= np.asarray(f['dec_gal'])*np.pi/180
-        z_gal = np.asarray(f['z_gal'])
+        ra_gal = np.asarray(f['ra'])*np.pi/180
+        dec_gal= np.asarray(f['dec'])*np.pi/180
+        z_gal = np.asarray(f['z'])
         
     ngal = len(ra_gal)
         
@@ -44,12 +46,51 @@ def main():
     dec_gal_gw = dec_gal[i_gw_gal]
     dL_gal_gw = dL_of_z(z_gal[i_gw_gal],H0Planck)
 
-    m1s = np.random.normal(35,5,len(i_gw_gal))
-    m2s = np.random.normal(35,5,len(i_gw_gal))
-    m2s_gal_gw, m1s_gal_gw = np.sort([m1s,m2s],axis=0)
 
-    m1sdet_gal_gw = m1s_gal_gw*(1+z_gal[i_gw_gal])
-    m2sdet_gal_gw = m2s_gal_gw*(1+z_gal[i_gw_gal])
+    # JAX key from your seed
+    key = random.PRNGKey(seed)
+
+    # --- hyperparameters for your model ---
+    m_min_1 = 5.0
+    m_max_1 = 80.0
+    alpha_1 = 2.0      # same convention as in logpm1m2_plpeak_massratio
+    mu = 35.0
+    sigma = 3.0
+    f = 0.03
+    beta = 1.0
+
+    # --- sample m1 ~ p(m1) ---
+    key, subkey_m1 = random.split(key)
+    m1s_jax = sample_m1_plpeak(
+        subkey_m1, ngw,
+        m_min_1, m_max_1,
+        alpha_1,
+        mu, sigma,
+        f
+    )
+
+    # --- sample q ~ p(q | m1) ---
+    key, subkey_q = random.split(key)
+    qs_jax = sample_q_given_m1(
+        subkey_q, m1s_jax,
+        m_min_1,
+        beta
+    )
+
+    # Convert to numpy for the rest of your numpy-based pipeline
+    m1s = np.array(m1s_jax)
+    qs  = np.array(qs_jax)
+
+    # m2 = q * m1
+    m2s = qs * m1s
+
+    # Enforce m1 >= m2 convention
+    m1s_gal_gw = np.maximum(m1s, m2s)
+    m2s_gal_gw = np.minimum(m1s, m2s)
+
+    # Detector-frame masses
+    m1sdet_gal_gw = m1s_gal_gw * (1 + z_gal[i_gw_gal])
+    m2sdet_gal_gw = m2s_gal_gw * (1 + z_gal[i_gw_gal])
 
     m1dets = []
     m2dets = []

@@ -104,6 +104,61 @@ def logpm1m2_plpeak_massratio(
     # --- log joint ---
     return jnp.log(p_m1) + jnp.log(p_q)
 
+from jax import jit, random
+import jax.numpy as jnp
+
+@jit
+def sample_m1_plpeak(key, n,
+                     m_min_1, m_max_1,
+                     alpha_1,  # same convention as in logpm1m2_plpeak_massratio
+                     mu, sigma,
+                     f):
+    """
+    Sample m1 from the mixture p(m1) = f * peak + (1-f) * power-law
+    (ignoring the low-mass smoothing Sfilter_low in the proposal).
+    """
+    # Power-law exponent used in logpm1m2_plpeak_massratio
+    alpha_pl = -alpha_1          # so p(m1) ∝ m1^{alpha_pl}
+    expo = 1.0 + alpha_pl        # exponent for inverse CDF
+
+    key_u_pl, key_comp, key_peak = random.split(key, 3)
+
+    # --- Power-law component on [m_min_1, m_max_1] ---
+    u_pl = random.uniform(key_u_pl, (n,))
+    norm = m_max_1**expo - m_min_1**expo
+    m1_pl = (u_pl * norm + m_min_1**expo)**(1.0 / expo)
+
+    # --- Peak component (Gaussian) ---
+    m1_peak = mu + sigma * random.normal(key_peak, (n,))
+
+    # --- Mixture choice ---
+    u_comp = random.uniform(key_comp, (n,))
+    choose_peak = u_comp < f
+    m1 = jnp.where(choose_peak, m1_peak, m1_pl)
+
+    # Enforce physical lower/upper bounds (Sfilter_low will still act in logp)
+    m1 = jnp.clip(m1, m_min_1, m_max_1)
+    return m1
+
+
+@jit
+def sample_q_given_m1(key, m1,
+                      m_min_1,
+                      beta):
+    """
+    Sample q from the conditional mass-ratio power law:
+        p(q | m1) ∝ q^beta,   q ∈ [q_min, 1],  q_min = m_min_1 / m1
+    This matches the structure used in logpm1m2_plpeak_massratio.
+    """
+    u = random.uniform(key, m1.shape)
+    q_min = m_min_1 / m1
+    expo = 1.0 + beta
+
+    # Inverse CDF of q^{beta} on [q_min, 1]
+    q = (u * (1.0 - q_min**expo) + q_min**expo)**(1.0 / expo)
+    return q
+
+
 @jit
 def log_p_pop_powerlaw_peak(m1, q, alpha_1, beta, m_min_1, m_max_1, dm_min_1, mu, sigma, f):
     log_dNdm1dq = logpm1m2_plpeak_massratio(m1, q, m_min_1, m_max_1, alpha_1, dm_min_1, beta, mu, sigma, f)
