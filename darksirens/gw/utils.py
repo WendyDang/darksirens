@@ -157,11 +157,11 @@ def load_selection_samples(
         # Branch 1: "injections/..." format
         # ------------------------------------------------------------
         if "injections" in f:
-            m1det_all = np.array(f["injections/mass1"][:])
-            m2det_all = np.array(f["injections/mass2"][:])
-            dL_all    = np.array(f["injections/distance"][:])
-            ra_all    = np.array(f["injections/right_ascension"][:])
-            dec_all   = np.array(f["injections/declination"][:])
+            m1det_all = np.array(f["injections"]["mass1"][:])
+            m2det_all = np.array(f["injections"]["mass2"][:])
+            dL_all    = np.array(f["injections"]["distance"][:])
+            ra_all    = np.array(f["injections"]["right_ascension"][:])
+            dec_all   = np.array(f["injections"]["declination"][:])
 
             # Cosmology for reference distribution
             H0Planck = Planck15.H0.value
@@ -174,9 +174,9 @@ def load_selection_samples(
             m2src_all = m2det_all / (1.0 + z_all)
 
             p_m1m2 = np.array(
-                f["injections/mass1_source_mass2_source_sampling_pdf"][:]
+                f["injections"]["mass1_source_mass2_source_sampling_pdf"][:]
             )
-            p_z = np.array(f["injections/redshift_sampling_pdf"][:])
+            p_z = np.array(f["injections"]["redshift_sampling_pdf"][:])
 
             # pdraw in detector-frame variables (Farr 2019 style)
             pdraw_all = (
@@ -186,10 +186,10 @@ def load_selection_samples(
             )
 
             # FAR-based detection
-            pycbc_far    = np.array(f["injections/far_pycbc_hyperbank"])
-            pycbc_bbh_far = np.array(f["injections/far_pycbc_bbh"])
-            gstlal_far   = np.array(f["injections/far_gstlal"])
-            mbta_far     = np.array(f["injections/far_mbta"])
+            pycbc_far    = np.array(f["injections"]["far_pycbc_hyperbank"])
+            pycbc_bbh_far = np.array(f["injections"]["far_pycbc_bbh"])
+            gstlal_far   = np.array(f["injections"]["far_gstlal"])
+            mbta_far     = np.array(f["injections"]["far_mbta"])
 
             detected = (
                 (pycbc_far < far_threshold)
@@ -209,11 +209,11 @@ def load_selection_samples(
         # Branch 2: "events/..." format
         # ------------------------------------------------------------
         elif "events" in f:
-            m1src_all = np.array(f["events/mass1_source"][:])
-            m2src_all = np.array(f["events/mass2_source"][:])
-            dL_all    = np.array(f["events/luminosity_distance"][:])
-            ra_all    = np.array(f["events/right_ascension"][:])
-            dec_all   = np.array(f["events/declination"][:])
+            m1src_all = np.array(f["events"]["mass1_source"][:])
+            m2src_all = np.array(f["events"]["mass2_source"][:])
+            dL_all    = np.array(f["events"]["luminosity_distance"][:])
+            ra_all    = np.array(f["events"]["right_ascension"][:])
+            dec_all   = np.array(f["events"]["declination"][:])
 
             H0Planck = Planck15.H0.value
             Om0Planck = Planck15.Om0
@@ -222,11 +222,11 @@ def load_selection_samples(
             m1det_all = m1src_all * (1.0 + z_all)
             m2det_all = m2src_all * (1.0 + z_all)
 
-            weights = np.array(f["events/weights"][:])
+            weights = np.array(f["events"]["weights"][:])
 
             ln_pdraw = np.array(
                 f[
-                    "events/lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z"
+                    "events"]["lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z"
                 ][:]
             )
             pdraw_all = np.exp(ln_pdraw) / (1.0 + z_all) ** 2 / ddL_of_z(
@@ -234,7 +234,7 @@ def load_selection_samples(
             )
 
             far_all = np.min(
-                [np.array(f["events/%s_far" % s][:]) for s in f.attrs["searches"]],
+                [np.array(f["events"]["%s_far" % s][:]) for s in f.attrs["searches"]],
                 axis=0,
             )
 
