@@ -10,6 +10,8 @@ import numpy as np
 import healpy as hp
 import pickle
 import warnings
+import json
+import datetime
 
 from argparse import ArgumentParser
 
@@ -38,7 +40,7 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 # ------------------------------------------------------------
-# CLI
+# Helpers
 # ------------------------------------------------------------
 def str_to_bool(value):
     if value.lower() in {"false", "f", "0", "no", "n"}:
@@ -48,6 +50,25 @@ def str_to_bool(value):
     raise ValueError(f"{value} is not a valid boolean value")
 
 
+def save_settings(opts, run_dir, extra=None):
+    """Save all run settings to JSON for reproducibility."""
+    d = vars(opts).copy()
+    if extra is not None:
+        d.update(extra)
+
+    d["environment"] = {
+        "jax_version": jax.__version__,
+        "numpy_version": np.__version__,
+        "healpy_version": hp.__version__,
+    }
+
+    with open(os.path.join(run_dir, "settings.json"), "w") as f:
+        json.dump(d, f, indent=2)
+
+
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
 def main():
     # --------------------------------------------------------
     # Parse arguments
@@ -62,16 +83,13 @@ def main():
     optp.add_argument("--pop_model", default="powerlaw+peak")
     
     optp.add_argument("--fix_population", default=False,
-                      type=str_to_bool, nargs="?", const=True,
-                      help="Fix population parameters instead of sampling them.")
+                      type=str_to_bool, nargs="?", const=True)
     
     optp.add_argument("--fix_cosmology", default=False,
-                      type=str_to_bool, nargs="?", const=True,
-                      help="Fix cosmological parameters instead of sampling them.")
+                      type=str_to_bool, nargs="?", const=True)
 
     optp.add_argument("--fix_survey", default=False,
-                      type=str_to_bool, nargs="?", const=True,
-                      help="Fix survey parameters instead of sampling them.")
+                      type=str_to_bool, nargs="?", const=True)
     
     optp.add_argument("--nsamp", type=int, default=256)
 
@@ -86,8 +104,6 @@ def main():
     optp.add_argument("--use_LSS", type=str_to_bool, nargs="?", const=True, default=True)
     optp.add_argument("--max_samples", type=int, default=1_000_000)
 
-
-
     opts = optp.parse_args()
 
     # --------------------------------------------------------
@@ -101,23 +117,22 @@ def main():
     # --------------------------------------------------------
     # LSS overdensity field
     # --------------------------------------------------------
-
     if opts.use_LSS:
         delta_g_pix_z = compute_LSS_overdensity(zgals, nside)
     else:
         delta_g_pix_z = jnp.zeros((hp.nside2npix(nside), len(zgrid)))
 
     # --------------------------------------------------------
-    # Build parameter space (labels + bounds)
+    # Build parameter space
     # --------------------------------------------------------
-    labels, lower_bound, upper_bound, n_pop_eff, pop_labels, survey_labels, cosmo_labels, n_cosmo_effective, n_survey_eff = \
+    labels, lower_bound, upper_bound, n_pop_eff, pop_labels, survey_labels, cosmo_labels, n_cosmo_eff, n_survey_eff = \
         build_parameter_space(opts.pop_model, opts.fix_population, opts.fix_cosmology, opts.fix_survey)
 
     pop_params_fid = get_fixed_population_params(opts.pop_model)
     prior_transform = make_prior_transform(lower_bound, upper_bound)
 
     # --------------------------------------------------------
-    # Build likelihood function
+    # Build likelihood
     # --------------------------------------------------------
     likelihood = make_likelihood(
         opts=opts,
@@ -142,6 +157,25 @@ def main():
     print(f"Running sampler: {method}")
 
     # --------------------------------------------------------
+    # Create run directory
+    # --------------------------------------------------------
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    run_name = f"{opts.pop_model}_{opts.universe_model}_{method}_{timestamp}"
+    run_dir = os.path.join(opts.save_path, run_name)
+    os.makedirs(run_dir, exist_ok=True)
+
+    # Save settings immediately
+    save_settings(opts, run_dir, extra={
+        "labels": labels,
+        "lower_bound": list(map(float, lower_bound)),
+        "upper_bound": list(map(float, upper_bound)),
+        "n_pop_eff": n_pop_eff,
+        "n_cosmo_eff": n_cosmo_eff,
+        "n_survey_eff": n_survey_eff,
+        "sampler": method,
+    })
+
+    # --------------------------------------------------------
     # Run sampler
     # --------------------------------------------------------
     samples = run_sampler(
@@ -158,15 +192,13 @@ def main():
     # Save results
     # --------------------------------------------------------
     if samples is not None:
-        os.makedirs(opts.save_path, exist_ok=True)
-
-        with open(os.path.join(opts.save_path, "samples.pkl"), "wb") as f:
-            pickle.dump(samples, f)
+        np.save(os.path.join(run_dir, "samples.npy"), samples)
 
         import corner
         fig = corner.corner(samples, labels=labels)
-        fig.savefig(os.path.join(opts.save_path, "corner.pdf"))
-        print("Saved posterior samples and corner plot.")
+        fig.savefig(os.path.join(run_dir, "corner.pdf"))
+
+        print(f"Saved samples and corner plot to {run_dir}")
     else:
         print("No samples returned from sampler.")
 
