@@ -11,6 +11,20 @@ from darksirens.utils.cosmology import z_of_dL, ddL_of_z
 from darksirens.utils.utils import logdiffexp
 
 
+from astropy.cosmology import Planck15
+
+H0_fid = float(Planck15.H0.value)        # km/s/Mpc
+Om0_fid = float(Planck15.Om0)            # dimensionless
+
+survey_params_fid = jnp.array([
+    -2.0,   # log10n0
+     1.0,   # z50
+     0.5,   # w
+     0.0,   # delta
+     1.0,   # b_miss
+     0.5,   # alpha
+])
+
 # ---------------------------------------------------------------------
 # Low-level JAX kernel (unchanged except for cleanup)
 # ---------------------------------------------------------------------
@@ -18,7 +32,7 @@ from darksirens.utils.utils import logdiffexp
     jax.jit,
     static_argnames=[
         "nEvents", "Ndraw", "nsamp", "apix",
-        "batch", "pop_model", "universe_model"
+        "pop_model", "universe_model"
     ],
 )
 def darksiren_log_likelihood(
@@ -29,7 +43,7 @@ def darksiren_log_likelihood(
     zgals_pe, dzgals_pe, wgals_pe,
     m1detsels, m2detsels, dLsels, p_draw,
     pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
-    nEvents, nsamp, Ndraw, apix, batch,
+    nEvents, nsamp, Ndraw, apix,
     pop_model, universe_model,
     delta_g_pix_z
 ):
@@ -37,12 +51,12 @@ def darksiren_log_likelihood(
     raw_logPriorUniverse = universe_model_parser(universe_model=universe_model)
 
     def logPriorUniverse_safe(z, pix,
-                              H0, Om0, n0, z50, w, delta, gamma,
+                              H0, Om0, n0, z50, w, delta,
                               apix, zgals, dzgals, wgals,
                               delta_g_pix_z, b_miss, alpha):
         lp = raw_logPriorUniverse(
             z, pix,
-            H0, Om0, n0, z50, w, delta, gamma,
+            H0, Om0, n0, z50, w, delta,
             apix, zgals, dzgals, wgals,
             delta_g_pix_z, b_miss, alpha
         )
@@ -50,7 +64,7 @@ def darksiren_log_likelihood(
 
     # Unpack parameters
     H0, Om0 = cosmo_params
-    log10n0, z50, w, delta, gamma, b_miss, alpha = survey_params
+    log10n0, z50, w, delta, b_miss, alpha = survey_params
     n0 = 10.0**log10n0
 
     # --------------------------------------------------------
@@ -61,10 +75,10 @@ def darksiren_log_likelihood(
     m2sels = m2detsels / (1 + zsels)
     qsels = m2sels / m1sels
 
-    log_det_weights = log_p_pop(m1sels, qsels, *pop_params)
+    log_det_weights = log_p_pop(m1sels, qsels, zsels,  *pop_params)
     log_det_weights += logPriorUniverse_safe(
         zsels, pixels_sel,
-        H0, Om0, n0, z50, w, delta, gamma,
+        H0, Om0, n0, z50, w, delta,
         apix, zgals_sel, dzgals_sel, wgals_sel,
         delta_g_pix_z, b_miss, alpha
     )
@@ -87,10 +101,10 @@ def darksiren_log_likelihood(
     m2 = m2det / (1 + z)
     q = m2 / m1
 
-    log_weights = log_p_pop(m1, q, *pop_params)
+    log_weights = log_p_pop(m1, q, z, *pop_params)
     log_weights += logPriorUniverse_safe(
         z, pixels_pe,
-        H0, Om0, n0, z50, w, delta, gamma,
+        H0, Om0, n0, z50, w, delta,
         apix, zgals_pe, dzgals_pe, wgals_pe,
         delta_g_pix_z, b_miss, alpha
     )
@@ -137,7 +151,6 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     nsamp = opts.nsamp
     Ndraw = data["Ndraw"]
     apix = data["apix"]
-    batch = opts.batch
 
     pop_model = opts.pop_model
     universe_model = opts.universe_model
@@ -145,17 +158,30 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     # Build the likelihood function used by samplers
     def likelihood(coord):
         coord = jnp.asarray(coord)
+        offset = 0
 
-        # Cosmology always first two
-        H0, Om0 = coord[:2]
+        # --- Cosmology ---
+        if opts.fix_cosmology:
+            H0, Om0 = H0_fid, Om0_fid
+        else:
+            H0, Om0 = coord[offset:offset+2]
+            offset += 2
 
+        # --- Population ---
         if opts.fix_population:
             pop_params = pop_params_fid
-            survey_params = coord[2:]
         else:
             n_pop = len(pop_params_fid)
-            pop_params = coord[2:2+n_pop]
-            survey_params = coord[2+n_pop:]
+            pop_params = coord[offset:offset+n_pop]
+            offset += n_pop
+
+        # --- Survey ---
+        if opts.fix_survey:
+            survey_params = survey_params_fid
+        else:
+            n_survey = len(survey_params_fid)
+            survey_params = coord[offset:offset+n_survey]
+            offset += n_survey
 
         return darksiren_log_likelihood(
             (H0, Om0),
@@ -165,9 +191,10 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
             zgals_pe, dzgals_pe, wgals_pe,
             m1detsels, m2detsels, dLsels, p_draw,
             pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
-            nEvents, nsamp, Ndraw, apix, batch,
+            nEvents, nsamp, Ndraw, apix,
             pop_model, universe_model,
             delta_g_pix_z
         )
+
 
     return likelihood

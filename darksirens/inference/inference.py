@@ -53,16 +53,27 @@ def main():
     # Parse arguments
     # --------------------------------------------------------
     optp = ArgumentParser()
-    optp.add_argument("--survey_path")
     optp.add_argument("--gw_path")
     optp.add_argument("--gwselection_path")
+    optp.add_argument("--survey_path")
     optp.add_argument("--save_path", default="./")
 
+    optp.add_argument("--universe_model", default="dark_sirens")
     optp.add_argument("--pop_model", default="powerlaw+peak")
-    optp.add_argument("--universe_model", default="dark_sirens_LSS")
+    
+    optp.add_argument("--fix_population", default=False,
+                      type=str_to_bool, nargs="?", const=True,
+                      help="Fix population parameters instead of sampling them.")
+    
+    optp.add_argument("--fix_cosmology", default=False,
+                      type=str_to_bool, nargs="?", const=True,
+                      help="Fix cosmological parameters instead of sampling them.")
 
+    optp.add_argument("--fix_survey", default=False,
+                      type=str_to_bool, nargs="?", const=True,
+                      help="Fix survey parameters instead of sampling them.")
+    
     optp.add_argument("--nsamp", type=int, default=256)
-    optp.add_argument("--batch", type=int, default=1)
 
     optp.add_argument("--emcee", type=str_to_bool, nargs="?", const=False, default=False)
     optp.add_argument("--dynesty", type=str_to_bool, nargs="?", const=False, default=False)
@@ -75,14 +86,7 @@ def main():
     optp.add_argument("--use_LSS", type=str_to_bool, nargs="?", const=True, default=True)
     optp.add_argument("--max_samples", type=int, default=1_000_000)
 
-    optp.add_argument(
-        "--fix_population",
-        type=str_to_bool,
-        nargs="?",
-        const=True,
-        default=False,
-        help="Fix population parameters instead of sampling them."
-    )
+
 
     opts = optp.parse_args()
 
@@ -106,8 +110,8 @@ def main():
     # --------------------------------------------------------
     # Build parameter space (labels + bounds)
     # --------------------------------------------------------
-    labels, lower_bound, upper_bound, n_pop_eff, pop_labels, survey_labels, cosmo_labels = \
-        build_parameter_space(opts.pop_model, opts.fix_population)
+    labels, lower_bound, upper_bound, n_pop_eff, pop_labels, survey_labels, cosmo_labels, n_cosmo_effective, n_survey_eff = \
+        build_parameter_space(opts.pop_model, opts.fix_population, opts.fix_cosmology, opts.fix_survey)
 
     pop_params_fid = get_fixed_population_params(opts.pop_model)
     prior_transform = make_prior_transform(lower_bound, upper_bound)

@@ -158,15 +158,19 @@ def sample_q_given_m1(key, m1,
     q = (u * (1.0 - q_min**expo) + q_min**expo)**(1.0 / expo)
     return q
 
+@jit
+def logpowerlaw_redshift(z, gamma):
+    return gamma * jnp.log1p(z)
+
 
 @jit
-def log_p_pop_powerlaw_peak(m1, q, alpha_1, beta, m_min_1, m_max_1, dm_min_1, mu, sigma, f):
+def log_p_pop_powerlaw_peak(m1, q, z, alpha_1, beta, m_min_1, m_max_1, dm_min_1, mu, sigma, f, gamma):
     log_dNdm1dq = logpm1m2_plpeak_massratio(m1, q, m_min_1, m_max_1, alpha_1, dm_min_1, beta, mu, sigma, f)
     #log_pchieff = logpchieff(chieff,mu_s1,sigma_s1)
 
     log_p_sz = np.log(0.25) # 1/2 for each spin dimension
-
-    return log_p_sz + log_dNdm1dq #+ log_pchieff
+    log_p_z = logpowerlaw_redshift(z, gamma)
+    return log_p_sz + log_dNdm1dq + log_p_z
 
 def pop_model_parser(pop_model='powerlaw+peak'):
     
@@ -241,13 +245,13 @@ def pop_model_prior_parser(pop_model='powerlaw+peak'):
         sigma_s_high = 1
 
 
-        lower_bound = [alpha_1_low, beta_low, m_min_1_low, m_max_1_low, dm_min_1_low, mu_low, sigma_low, f1_low]
+        lower_bound = [alpha_1_low, beta_low, m_min_1_low, m_max_1_low, dm_min_1_low, mu_low, sigma_low, f1_low, gamma_low]
         
         
-        upper_bound = [alpha_1_high, beta_high, m_min_1_high, m_max_1_high, dm_min_1_high, mu_high, sigma_high, f1_high]
+        upper_bound = [alpha_1_high, beta_high, m_min_1_high, m_max_1_high, dm_min_1_high, mu_high, sigma_high, f1_high, gamma_high]
         
-        labels = [r'$\alpha$',r'$\beta$', r'$m_{\rm min}$',r'$m_{\rm max}$', r'$dm_{\rm min}$', r'$\mu$', r'$\sigma$', r'$f$']
-        
+        labels = [r'$\alpha$',r'$\beta$', r'$m_{\rm min}$',r'$m_{\rm max}$', r'$dm_{\rm min}$', r'$\mu$', r'$\sigma$', r'$f$', r'$\gamma$']
+    #FIX    
     if pop_model=='brokenpowerlaw+2peaks':
         H0_lo = 20
         H0_hi = 140

@@ -169,12 +169,12 @@ logpcatalog_vmap = jit(
 # ------------------------------------------------------------
 @partial(jit, static_argnames=['apix'])
 def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
-                     delta, gamma, apix,
+                     delta, apix,
                      zgals, dzgals, wgals,
                      delta_g_pix_z, b_miss, alpha):
     """
     Unified dark-siren prior:
-      p(z|pix) ∝ [ f p_cat + (1-f) p_miss ] (1+z)^{gamma-1}
+      p(z|pix) ∝ [ f p_cat + (1-f) p_miss ]
     """
 
     f, pmiss, _ = completeness_fraction_vmap(
@@ -195,12 +195,12 @@ def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
         axis=0
     )
 
-    return log_mix + (gamma - 1) * jnp.log1p(z)
+    return log_mix - 1.0 * jnp.log1p(z)
 
 
 @partial(jit, static_argnames=['apix'])
 def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
-                                    delta, gamma, apix, zgals, dzgals, wgals,
+                                    delta, apix, zgals, dzgals, wgals,
                                     delta_g_pix_z, b_miss, alpha):
     """
     Same structure, but with f=0 (no catalog term in the mixture).
@@ -226,17 +226,17 @@ def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
         axis=0
     )
 
-    return log_mix + (gamma - 1.0) * jnp.log1p(z)
+    return log_mix - 1.0 * jnp.log1p(z)
 
 
 @partial(jit, static_argnames=['apix'])
 def logPriorUniverse_spectralsirens_fast(z, pix, H0, Om0, n0, z50, w,
-                                         delta, gamma, apix, zgals, dzgals, wgals,
+                                         delta, apix, zgals, dzgals, wgals,
                                          delta_g_pix_z, b_miss, alpha):
     """
     Pure volume + evolution prior (no catalog, no completeness).
     """
-    pvol = dV_of_z(zgrid, H0, Om0) * (1.0 + zgrid) ** (gamma - 1.0)
+    pvol = dV_of_z(zgrid, H0, Om0) / (1.0 + zgrid)
     pvol = pvol / jnp.trapezoid(pvol, zgrid)
     logpvol = jnp.log(pvol)
     return jnp.interp(z, zgrid, logpvol)
