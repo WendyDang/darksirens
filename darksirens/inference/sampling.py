@@ -1,4 +1,3 @@
-# sampling.py
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -12,10 +11,16 @@ def run_sampler(method, likelihood, prior_transform, labels,
     labels: list of parameter names
     lower_bound, upper_bound: arrays
     opts: argparse namespace
+
+    Returns a dict:
+        {
+            "samples": array of shape (Nsamp, ndim),
+            "logZ": float or None,
+            "logZerr": float or None
+        }
     """
 
     ndims = len(labels)
-    samples = None
 
     # --------------------------------------------------------
     # JAXNS
@@ -27,8 +32,6 @@ def run_sampler(method, likelihood, prior_transform, labels,
         from jaxns.framework.model import Model
         from jaxns.framework.prior import Prior
 
-        ndim = len(labels)
-
         # Prior model: returns a vector theta of shape (ndim,)
         def prior_model():
             params = []
@@ -37,13 +40,10 @@ def run_sampler(method, likelihood, prior_transform, labels,
                 high = float(upper_bound[i])
                 x = yield Prior(tfpd.Uniform(low=low, high=high), name=name)
                 params.append(x)
-            theta = jnp.stack(params)
-            return theta
+            return jnp.stack(params)
 
-        # Likelihood: takes that vector theta
         def log_likelihood(theta):
-            theta = jnp.asarray(theta)
-            return likelihood(theta)
+            return likelihood(jnp.asarray(theta))
 
         model = Model(
             prior_model=prior_model,
@@ -63,8 +63,12 @@ def run_sampler(method, likelihood, prior_transform, labels,
 
         posterior = results.samples  # dict of arrays
         samples = jnp.column_stack([posterior[name] for name in labels])
-        return samples
 
+        return {
+            "samples": np.asarray(samples),
+            "logZ": None,        # JAXNS evidence not extracted here
+            "logZerr": None
+        }
 
     # --------------------------------------------------------
     # dynesty
@@ -73,14 +77,27 @@ def run_sampler(method, likelihood, prior_transform, labels,
         from dynesty import NestedSampler
         from dynesty.utils import resample_equal
 
-        sampler = NestedSampler(likelihood, prior_transform, ndims,
-                                bound="multi", sample="rwalk",
-                                nlive=opts.nlive)
+        sampler = NestedSampler(
+            likelihood, prior_transform, ndims,
+            bound="multi", sample="rwalk",
+            nlive=opts.nlive
+        )
         sampler.run_nested(dlogz=0.1)
         res = sampler.results
 
+        # Posterior samples
         weights = np.exp(res["logwt"] - res["logz"][-1])
         samples = resample_equal(res.samples, weights)
+
+        # Evidence
+        logZ = float(res.logz[-1])
+        logZerr = float(res.logzerr[-1])
+
+        return {
+            "samples": np.asarray(samples),
+            "logZ": logZ,
+            "logZerr": logZerr
+        }
 
     # --------------------------------------------------------
     # emcee
@@ -106,7 +123,11 @@ def run_sampler(method, likelihood, prior_transform, labels,
         chain = sampler.flatchain
         samples = chain[len(chain)//2:]
 
+        return {
+            "samples": np.asarray(samples),
+            "logZ": None,        # emcee does not compute evidence
+            "logZerr": None
+        }
+
     else:
         raise ValueError(f"Unknown sampler: {method}")
-
-    return np.asarray(samples)

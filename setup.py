@@ -28,6 +28,7 @@ setuptools.setup(
     entry_points={
         "console_scripts": [
             "darksirens_inference=darksirens.inference.inference:main",
+            "darksirens_analyze=darksirens.inference.analyze:main",
             "darksirens_pixelate_survey=darksirens.em.pixelate_survey:main",
             "darksirens_gwmock=darksirens.gw.mock_data:main",
         ]

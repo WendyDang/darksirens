@@ -178,7 +178,7 @@ def main():
     # --------------------------------------------------------
     # Run sampler
     # --------------------------------------------------------
-    samples = run_sampler(
+    results = run_sampler(
         method=method,
         likelihood=likelihood,
         prior_transform=prior_transform,
@@ -191,17 +191,20 @@ def main():
     # --------------------------------------------------------
     # Save results
     # --------------------------------------------------------
-    if samples is not None:
-        np.save(os.path.join(run_dir, "samples.npy"), samples)
+    if results is not None:
+        # Save full dict (samples + logZ + logZerr)
+        np.save(os.path.join(run_dir, "samples.npy"), results)
+
+        # Extract just the samples array for corner plot
+        samples = results["samples"]
 
         import corner
         fig = corner.corner(samples, labels=labels)
         fig.savefig(os.path.join(run_dir, "corner.pdf"))
 
-        print(f"Saved samples and corner plot to {run_dir}")
+        print(f"Saved samples, evidence info, and corner plot to {run_dir}")
     else:
         print("No samples returned from sampler.")
-
 
 if __name__ == "__main__":
     main()
