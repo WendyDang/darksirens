@@ -8,10 +8,154 @@ from darksirens.utils.cosmology import Om0Planck
 def get_fixed_population_params(pop_model):
     """
     Fiducial population parameters used when --fix_population=True.
-    You can customize this per pop_model.
     """
-    # Example for powerlaw+peak
-    return jnp.array([2.0, 1.0, 5.0, 80.0, 0.5, 35.0, 5.0, 0.1, 3.0])
+
+    if pop_model == "powerlaw+peak":
+        # [alpha_1, beta, m_min_1, m_max_1, dm_min_1, mu, sigma, f, gamma]
+        return jnp.array([
+            2.0,   # alpha_1
+            1.0,   # beta
+            5.0,   # m_min
+            80.0,  # m_max
+            0.5,   # dm_min
+            35.0,  # mu
+            5.0,   # sigma
+            0.1,   # f
+            3.0    # gamma
+        ])
+
+    elif pop_model == "brokenpowerlaw+2peaks":
+        # [
+        #   alpha_1, alpha_2, break_mass,
+        #   m_min, dm_min,
+        #   m_max, dm_max,
+        #   f1, f2,
+        #   mu1, sigma1,
+        #   mu2, sigma2,
+        #   beta,
+        #   gamma
+        # ]
+        return jnp.array([
+            2.0,   # alpha_1
+            4.0,   # alpha_2
+            30.0,  # break_mass
+            5.0,   # m_min
+            3.0,   # dm_min
+            80.0,  # m_max
+            10.0,  # dm_max
+            0.10,  # f1
+            0.05,  # f2
+            10.0,  # mu1
+            3.0,   # sigma1
+            35.0,  # mu2
+            5.0,   # sigma2
+            1.0,   # beta
+            3.0    # gamma
+        ])
+
+    elif pop_model == "brokenpowerlaw+3peaks":
+        return jnp.array([
+            2.0,   # alpha_1
+            4.0,   # alpha_2
+            30.0,  # break_mass
+            5.0,   # m_min
+            3.0,   # dm_min
+            80.0,  # m_max
+            10.0,  # dm_max
+            0.10,  # f1
+            0.05,  # f2
+            0.03,  # f3
+            10.0,  # mu1
+            3.0,   # sigma1
+            35.0,  # mu2
+            5.0,   # sigma2
+            70.0,  # mu3
+            10.0,  # sigma3
+            1.0,   # beta
+            3.0    # gamma
+        ])
+
+    elif pop_model == "twopowerlaws+peak":
+        return jnp.array([
+            2.0,   # alpha_1
+            4.0,   # alpha_2
+            5.0,   # m_min
+            3.0,   # dm_min
+            80.0,  # m_max
+            10.0,  # dm_max
+            0.20,  # f1
+            0.10,  # f2
+            0.05,  # f3
+            70.0,  # mu3
+            10.0,  # sigma3
+            1.0,   # beta
+            3.0    # gamma
+        ])
+    
+    elif pop_model == "symmetric_powerlaw+peak":
+        return jnp.array([
+            2.0,   # alpha
+            1.0,   # beta
+            5.0,   # m_min
+            80.0,  # m_max
+            0.5,   # dm_min
+            35.0,  # mu
+            5.0,   # sigma
+            0.1,   # f
+            3.0    # gamma
+        ])
+
+    elif pop_model == "symmetric_brokenpowerlaw+2peaks":
+        return jnp.array([
+            2.0,   # alpha_1
+            4.0,   # alpha_2
+            30.0,  # break_mass
+            5.0,   # m_min
+            3.0,   # dm_min
+            80.0,  # m_max
+            10.0,  # dm_max
+            0.10,  # f1
+            0.05,  # f2
+            10.0,  # mu1
+            3.0,   # sigma1
+            35.0,  # mu2
+            5.0,   # sigma2
+            1.0,   # beta
+            3.0    # gamma
+        ])
+
+    elif pop_model == "symmetric_brokenpowerlaw+3peaks":
+        return jnp.array([
+            2.0, 4.0, 30.0,
+            5.0, 3.0,
+            80.0, 10.0,
+            0.10, 0.05, 0.03,
+            10.0, 3.0,
+            35.0, 5.0,
+            70.0, 10.0,
+            1.0,
+            3.0
+        ])
+
+    elif pop_model == "symmetric_twopowerlaws+peak":
+        return jnp.array([
+            2.0,   # alpha_1
+            4.0,   # alpha_2
+            5.0,   # m_min
+            3.0,   # dm_min
+            80.0,  # m_max
+            10.0,  # dm_max
+            0.20,  # f1
+            0.10,  # f2
+            0.05,  # f3
+            70.0,  # mu3
+            10.0,  # sigma3
+            1.0,   # beta
+            3.0    # gamma
+        ])
+
+    else:
+        raise ValueError(f"No fixed parameters defined for model '{pop_model}'")
 
 
 def build_parameter_space(pop_model, fix_population, fix_cosmology, fix_survey):
@@ -27,7 +171,7 @@ def build_parameter_space(pop_model, fix_population, fix_cosmology, fix_survey):
     n_cosmo = len(cosmo_labels)
 
     # --- Population ---
-    pop_lower, pop_upper, pop_labels = pop_model_prior_parser(pop_model)
+    pop_lower, pop_upper, pop_labels, model_name = pop_model_prior_parser(pop_model)
     n_pop = len(pop_labels)
 
     # --- Survey ---
@@ -78,6 +222,7 @@ def build_parameter_space(pop_model, fix_population, fix_cosmology, fix_survey):
         cosmo_labels,
         n_cosmo_eff,
         n_survey_eff,
+        model_name,
     )
 
 

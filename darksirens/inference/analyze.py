@@ -144,26 +144,7 @@ def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid):
 
     @jax.jit
     def single_theta(theta):
-        (alpha_1, beta,
-         m_min_1, m_max_1, dm_min_1,
-         mu, sigma, f,
-         gamma) = theta
-
-        logp = pop_model(
-            m1=m1_grid,
-            q=q_grid,
-            z=z_grid,
-            alpha_1=alpha_1,
-            beta=beta,
-            m_min_1=m_min_1,
-            m_max_1=m_max_1,
-            dm_min_1=dm_min_1,
-            mu=mu,
-            sigma=sigma,
-            f=f,
-            gamma=gamma,
-        )
-
+        logp = pop_model(m1_grid, q_grid, z_grid, *theta)
         p = jnp.exp(logp)
 
         p_m1 = jnp.trapezoid(jnp.trapezoid(p, zgrid, axis=2), qgrid, axis=1)
@@ -451,7 +432,7 @@ def main():
         pz_list.append(pz_samples)
         pm1m2_list.append(pm1m2_samples)
 
-        model_label = settings.get("pop_model", os.path.basename(run_dir))
+        model_label = settings.get("model_name", os.path.basename(run_dir))
         labels.append(model_label)
 
     limits = (args.cred_lo, args.cred_hi)

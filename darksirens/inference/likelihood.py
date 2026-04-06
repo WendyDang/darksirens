@@ -75,7 +75,7 @@ def darksiren_log_likelihood(
     m2sels = m2detsels / (1 + zsels)
     qsels = m2sels / m1sels
 
-    log_det_weights = log_p_pop(m1sels, qsels, zsels,  *pop_params)
+    log_det_weights = log_p_pop(m1sels, qsels, zsels, *pop_params)
     log_det_weights += logPriorUniverse_safe(
         zsels, pixels_sel,
         H0, Om0, n0, z50, w, delta,

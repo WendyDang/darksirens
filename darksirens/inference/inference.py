@@ -125,7 +125,7 @@ def main():
     # --------------------------------------------------------
     # Build parameter space
     # --------------------------------------------------------
-    labels, lower_bound, upper_bound, n_pop_eff, pop_labels, survey_labels, cosmo_labels, n_cosmo_eff, n_survey_eff = \
+    labels, lower_bound, upper_bound, n_pop_eff, pop_labels, survey_labels, cosmo_labels, n_cosmo_eff, n_survey_eff, model_name = \
         build_parameter_space(opts.pop_model, opts.fix_population, opts.fix_cosmology, opts.fix_survey)
 
     pop_params_fid = get_fixed_population_params(opts.pop_model)
@@ -173,6 +173,7 @@ def main():
         "n_cosmo_eff": n_cosmo_eff,
         "n_survey_eff": n_survey_eff,
         "sampler": method,
+        "model_name": model_name,
     })
 
     # --------------------------------------------------------

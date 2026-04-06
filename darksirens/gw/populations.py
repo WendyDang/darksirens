@@ -1,348 +1,1403 @@
 import os
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false'
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='0.99'
-os.environ['XLA_PYTHON_CLIENT_ALLOCATOR']='platform'
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.99"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
 import jax
+from jax import random, jit
+import jax.numpy as jnp
 
-from jax import random, jit, vmap, grad
-from jax import numpy as jnp
-from jax.lax import cond
-
-import astropy
 import numpy as np
-import healpy as hp
 
-import h5py
-import astropy.units as u
-
-from astropy.cosmology import Planck15, FlatLambdaCDM, z_at_value
-import astropy.constants as constants
-from jax.scipy.special import logsumexp
-from scipy.interpolate import interp1d
-from scipy.stats import gaussian_kde
 from jax.scipy.stats import norm
-from jax.nn import log_sigmoid
-
-from tqdm import tqdm
-
-from argparse import ArgumentParser
-import glob
-
 from darksirens.utils.cosmology import *
 
-from jax.scipy.stats import norm
+# ------------------------------------------------------------
+# LaTeX-ready model names
+# ------------------------------------------------------------
+MODEL_NAME_LATEX = {
+    "powerlaw+peak":                     "PL+G",
+    "brokenpowerlaw+2peaks":             "BPL+2G",
+    "brokenpowerlaw+3peaks":             "BPL+3G",
+    "twopowerlaws+peak":                 "2PL+G",
 
-mass = jnp.linspace(1, 250, 2000)
-mass_ratio =  jnp.linspace(0, 1, 2000)
-chieff_grid = jnp.linspace(-1, 1, 2000)
+    "symmetric_powerlaw+peak":           "Sym PL+G",
+    "symmetric_brokenpowerlaw+2peaks":   "Sym BPL+2G",
+    "symmetric_brokenpowerlaw+3peaks":   "Sym BPL+3G",
+    "symmetric_twopowerlaws+peak":       "Sym 2PL+G",
 
-def Sfilter_low(m,m_min,dm_min):
+    "mock_data":                         r"\text{Mock}"
+}
+
+
+def get_model_name_latex(model_key: str) -> str:
+    try:
+        return MODEL_NAME_LATEX[model_key]
+    except KeyError:
+        return model_key  # fallback
+
+
+# Grids (if you actually use them elsewhere in this module)
+mass = jnp.linspace(1.0, 250.0, 2000)
+mass_ratio = jnp.linspace(0.0, 1.0, 2000)
+chieff_grid = jnp.linspace(-1.0, 1.0, 2000)
+
+
+# ------------------------------------------------------------
+# Filters and basic pieces
+# ------------------------------------------------------------
+def Sfilter_low(m, m_min, dm_min):
     """
-    Smoothed filter function
+    Smoothed low-mass filter.
 
     See Eq. B5 in https://arxiv.org/pdf/2111.03634.pdf
     """
-    def f(mm,deltaMM):
-        return jnp.exp(deltaMM/mm + deltaMM/(mm-deltaMM))
-    
-    S_filter = 1./(f(m-m_min,dm_min) + 1.)
-    S_filter = jnp.where(m<m_min+dm_min,S_filter,1.)
-    S_filter = jnp.where(m>m_min,S_filter,0.)
+    def f(mm, deltaMM):
+        return jnp.exp(deltaMM / mm + deltaMM / (mm - deltaMM))
+
+    S_filter = 1.0 / (f(m - m_min, dm_min) + 1.0)
+    S_filter = jnp.where(m < m_min + dm_min, S_filter, 1.0)
+    S_filter = jnp.where(m > m_min, S_filter, 0.0)
     return S_filter
 
-def Sfilter_high(m,m_max,dm_max):
+
+def Sfilter_high(m, m_max, dm_max):
     """
-    Smoothed filter function
+    Smoothed high-mass filter.
 
     See Eq. B5 in https://arxiv.org/pdf/2111.03634.pdf
     """
-    def f(mm,deltaMM):
-        return jnp.exp(deltaMM/mm + deltaMM/(mm-deltaMM))
-    
-    S_filter = 1./(f(m-m_max,-dm_max) + 1.)
-    S_filter = jnp.where(m>m_max-dm_max,S_filter,1.)
-    S_filter = jnp.where(m<m_max,S_filter,0.)
+    def f(mm, deltaMM):
+        return jnp.exp(deltaMM / mm + deltaMM / (mm - deltaMM))
+
+    S_filter = 1.0 / (f(m - m_max, -dm_max) + 1.0)
+    S_filter = jnp.where(m > m_max - dm_max, S_filter, 1.0)
+    S_filter = jnp.where(m < m_max, S_filter, 0.0)
     return S_filter
 
-def logpchieff(chieff,mu_chieff,sigma_chieff):
-    pchieff =  jnp.exp(-(chieff - mu_chieff)**2 / (2 * sigma_chieff ** 2))/jnp.sqrt(2*jnp.pi*sigma_chieff**2)
+
+def logpchieff(chieff, mu_chieff, sigma_chieff):
+    pchieff = jnp.exp(-(chieff - mu_chieff) ** 2 / (2.0 * sigma_chieff ** 2)) / jnp.sqrt(
+        2.0 * jnp.pi * sigma_chieff**2
+    )
     return jnp.log(pchieff)
 
 
+# ------------------------------------------------------------
+# Powerlaw + peak in m1, powerlaw in q
+# ------------------------------------------------------------
 @jit
 def logpm1m2_plpeak_massratio(
-    m1, q,
-    m_min_1, m_max_1,
-    alpha_1, dm_min_1,
-    beta, mu, sigma,
-    f
+    m1,
+    q,
+    m_min_1,
+    m_max_1,
+    alpha_1,
+    dm_min_1,
+    beta,
+    mu,
+    sigma,
+    f,
 ):
-    alpha_1 = -alpha_1
+    """
+    log p(m1, q) for a power-law + peak in m1 and power-law in q.
+    """
+    # Power-law exponent convention
+    alpha_pl = -alpha_1
+
     # --- p(m1): Power-law component ---
-    norm_pl = (m_max_1**(1. + alpha_1) - m_min_1**(1. + alpha_1))
-    p_m1_pl = (1. + alpha_1) * m1**alpha_1 / norm_pl
+    norm_pl = m_max_1 ** (1.0 + alpha_pl) - m_min_1 ** (1.0 + alpha_pl)
+    p_m1_pl = (1.0 + alpha_pl) * m1**alpha_pl / norm_pl
 
     # Mask out-of-range m1
     p_m1_pl = jnp.where(m1 > m_max_1, 0.0, p_m1_pl)
     p_m1_pl = jnp.where(m1 < m_min_1, 0.0, p_m1_pl)
 
     # --- p(m1): Peak component ---
-    p_m1_peak = jnp.exp(-0.5 * (m1 - mu)**2 / sigma**2) / jnp.sqrt(2. * jnp.pi * sigma**2)
+    p_m1_peak = jnp.exp(-0.5 * (m1 - mu) ** 2 / sigma**2) / jnp.sqrt(
+        2.0 * jnp.pi * sigma**2
+    )
 
-    # Mixture
-    p_m1 = Sfilter_low(m1,m_min_1,dm_min_1)*(f * p_m1_peak + (1. - f) * p_m1_pl)
+    # Mixture with low-mass smoothing
+    p_m1 = Sfilter_low(m1, m_min_1, dm_min_1) * (f * p_m1_peak + (1.0 - f) * p_m1_pl)
 
     # --- p(q | m1): mass-ratio power law ---
-    q_min = m_min_1/m1
-    denom = 1 - q_min**(1. + beta)
-    p_q = Sfilter_low(q*m1,m_min_1,dm_min_1) * (1. + beta) * q**beta / denom
+    q_min = m_min_1 / m1
+    denom = 1.0 - q_min ** (1.0 + beta)
+    p_q = Sfilter_low(q * m1, m_min_1, dm_min_1) * (1.0 + beta) * q**beta / denom
 
     # Enforce m2 >= m_min_1
-    p_q = jnp.where(q*m1 < m_min_1, 0.0, p_q)
+    p_q = jnp.where(q * m1 < m_min_1, 0.0, p_q)
 
-    # --- log joint ---
     return jnp.log(p_m1) + jnp.log(p_q)
 
-from jax import jit, random
-import jax.numpy as jnp
 
 @jit
-def sample_m1_plpeak(key, n,
-                     m_min_1, m_max_1,
-                     alpha_1,  # same convention as in logpm1m2_plpeak_massratio
-                     mu, sigma,
-                     f):
+def logpm1m2_brokenpowerlaw_2peaks_massratio(
+    m1, q,
+    # broken power law
+    alpha_1, alpha_2, break_mass,
+    m_min, dm_min,
+    m_max, dm_max,
+    # peaks
+    f1, f2,
+    mu1, sigma1,
+    mu2, sigma2,
+    # mass ratio
+    beta
+):
     """
-    Sample m1 from the mixture p(m1) = f * peak + (1-f) * power-law
-    (ignoring the low-mass smoothing Sfilter_low in the proposal).
+    log p(m1, q) for a broken power law + two Gaussian peaks + mass-ratio power law.
     """
-    # Power-law exponent used in logpm1m2_plpeak_massratio
-    alpha_pl = -alpha_1          # so p(m1) ∝ m1^{alpha_pl}
-    expo = 1.0 + alpha_pl        # exponent for inverse CDF
 
-    key_u_pl, key_comp, key_peak = random.split(key, 3)
+    # ------------------------------------------------------------
+    # Broken power law in m1
+    # ------------------------------------------------------------
+    # Low-mass smoothing
+    S_low = Sfilter_low(m1, m_min, dm_min)
+    # High-mass smoothing
+    S_high = Sfilter_high(m1, m_max, dm_max)
 
-    # --- Power-law component on [m_min_1, m_max_1] ---
-    u_pl = random.uniform(key_u_pl, (n,))
-    norm = m_max_1**expo - m_min_1**expo
-    m1_pl = (u_pl * norm + m_min_1**expo)**(1.0 / expo)
+    # Two power-law branches
+    pl1 = m1 ** (-alpha_1)
+    pl2 = m1 ** (-alpha_2)
 
-    # --- Peak component (Gaussian) ---
-    m1_peak = mu + sigma * random.normal(key_peak, (n,))
+    p_pl = jnp.where(m1 < break_mass, pl1, pl2)
 
-    # --- Mixture choice ---
-    u_comp = random.uniform(key_comp, (n,))
-    choose_peak = u_comp < f
-    m1 = jnp.where(choose_peak, m1_peak, m1_pl)
+    # ------------------------------------------------------------
+    # Gaussian peaks
+    # ------------------------------------------------------------
+    peak1 = jnp.exp(-0.5 * (m1 - mu1)**2 / sigma1**2) / jnp.sqrt(2*jnp.pi*sigma1**2)
+    peak2 = jnp.exp(-0.5 * (m1 - mu2)**2 / sigma2**2) / jnp.sqrt(2*jnp.pi*sigma2**2)
 
-    # Enforce physical lower/upper bounds (Sfilter_low will still act in logp)
-    m1 = jnp.clip(m1, m_min_1, m_max_1)
-    return m1
+    # Mixture weights: remaining weight goes to power law
+    f_pl = 1.0 - f1 - f2
+    p_m1 = S_low * S_high * (f_pl * p_pl + f1 * peak1 + f2 * peak2)
 
-
-@jit
-def sample_q_given_m1(key, m1,
-                      m_min_1,
-                      beta):
-    """
-    Sample q from the conditional mass-ratio power law:
-        p(q | m1) ∝ q^beta,   q ∈ [q_min, 1],  q_min = m_min_1 / m1
-    This matches the structure used in logpm1m2_plpeak_massratio.
-    """
-    u = random.uniform(key, m1.shape)
-    q_min = m_min_1 / m1
+    # ------------------------------------------------------------
+    # Mass ratio distribution p(q | m1)
+    # ------------------------------------------------------------
+    q_min = m_min / m1
     expo = 1.0 + beta
+    denom = 1.0 - q_min**expo
 
-    # Inverse CDF of q^{beta} on [q_min, 1]
-    q = (u * (1.0 - q_min**expo) + q_min**expo)**(1.0 / expo)
-    return q
+    p_q = (1.0 + beta) * q**beta / denom
 
+    # enforce m2 >= m_min
+    p_q = jnp.where(q * m1 < m_min, 0.0, p_q)
+
+    return jnp.log(p_m1) + jnp.log(p_q)
+
+
+@jit
+def logpm1m2_brokenpowerlaw_3peaks_massratio(
+    m1, q,
+    alpha_1, alpha_2, break_mass,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2, f3,
+    mu1, sigma1,
+    mu2, sigma2,
+    mu3, sigma3,
+    beta
+):
+    """
+    log p(m1, q) for a broken power law + 3 Gaussian peaks + mass-ratio power law.
+    """
+
+    # ------------------------------------------------------------
+    # Broken power law
+    # ------------------------------------------------------------
+    S_low  = Sfilter_low(m1,  m_min, dm_min)
+    S_high = Sfilter_high(m1, m_max, dm_max)
+
+    pl1 = m1 ** (-alpha_1)
+    pl2 = m1 ** (-alpha_2)
+    p_pl = jnp.where(m1 < break_mass, pl1, pl2)
+
+    # ------------------------------------------------------------
+    # Gaussian peaks
+    # ------------------------------------------------------------
+    peak1 = jnp.exp(-0.5 * (m1 - mu1)**2 / sigma1**2) / jnp.sqrt(2*jnp.pi*sigma1**2)
+    peak2 = jnp.exp(-0.5 * (m1 - mu2)**2 / sigma2**2) / jnp.sqrt(2*jnp.pi*sigma2**2)
+    peak3 = jnp.exp(-0.5 * (m1 - mu3)**2 / sigma3**2) / jnp.sqrt(2*jnp.pi*sigma3**2)
+
+    # Remaining weight goes to power law
+    f_pl = 1.0 - f1 - f2 - f3
+
+    p_m1 = S_low * S_high * (
+        f_pl * p_pl +
+        f1 * peak1 +
+        f2 * peak2 +
+        f3 * peak3
+    )
+
+    # ------------------------------------------------------------
+    # Mass ratio distribution p(q | m1)
+    # ------------------------------------------------------------
+    q_min = m_min / m1
+    expo = 1.0 + beta
+    denom = 1.0 - q_min**expo
+
+    p_q = (1.0 + beta) * q**beta / denom
+    p_q = jnp.where(q * m1 < m_min, 0.0, p_q)
+
+    return jnp.log(p_m1) + jnp.log(p_q)
+
+
+@jit
+def logpm1m2_twopowerlaws_peak_massratio(
+    m1, q,
+    alpha_1, alpha_2,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2, f3,
+    mu3, sigma3,
+    beta
+):
+    """
+    log p(m1, q) for two power laws + one high-mass Gaussian peak.
+    """
+
+    # ------------------------------------------------------------
+    # Smoothing filters
+    # ------------------------------------------------------------
+    S_low  = Sfilter_low(m1,  m_min, dm_min)
+    S_high = Sfilter_high(m1, m_max, dm_max)
+
+    # ------------------------------------------------------------
+    # Two power laws (ordered in mass)
+    # ------------------------------------------------------------
+    pl1 = m1 ** (-alpha_1)
+    pl2 = m1 ** (-alpha_2)
+
+    # enforce ordering: pl1 applies below pl2
+    p_pl = jnp.where(m1 < (m_min + m_max) / 2.0, pl1, pl2)
+
+    # ------------------------------------------------------------
+    # High-mass Gaussian peak
+    # ------------------------------------------------------------
+    peak3 = jnp.exp(-0.5 * (m1 - mu3)**2 / sigma3**2) / jnp.sqrt(
+        2 * jnp.pi * sigma3**2
+    )
+
+    # ------------------------------------------------------------
+    # Mixture
+    # ------------------------------------------------------------
+    f_pl = 1.0 - f1 - f2 - f3
+    p_m1 = S_low * S_high * (
+        f_pl * p_pl +
+        f1 * pl1 +
+        f2 * pl2 +
+        f3 * peak3
+    )
+
+    # ------------------------------------------------------------
+    # Mass ratio distribution p(q | m1)
+    # ------------------------------------------------------------
+    q_min = m_min / m1
+    expo = 1.0 + beta
+    denom = 1.0 - q_min**expo
+
+    p_q = (1.0 + beta) * q**beta / denom
+    p_q = jnp.where(q * m1 < m_min, 0.0, p_q)
+
+    return jnp.log(p_m1) + jnp.log(p_q)
+
+
+@jit
+def pm_plpeak(m, m_min, m_max, alpha, dm_min, mu, sigma, f):
+    alpha_pl = -alpha
+
+    # Power-law
+    norm_pl = m_max**(1 + alpha_pl) - m_min**(1 + alpha_pl)
+    p_pl = (1 + alpha_pl) * m**alpha_pl / norm_pl
+    p_pl = jnp.where((m < m_min) | (m > m_max), 0.0, p_pl)
+
+    # Peak
+    p_peak = jnp.exp(-0.5 * (m - mu)**2 / sigma**2) / jnp.sqrt(
+        2 * jnp.pi * sigma**2
+    )
+
+    # Mixture with smoothing
+    return Sfilter_low(m, m_min, dm_min) * (f * p_peak + (1 - f) * p_pl)
+
+
+@jit
+def logpm1m2_symmetric_plpeak_massratio(
+    m1, m2,
+    m_min, m_max,
+    alpha, dm_min,
+    mu, sigma, f,
+    beta
+):
+    """
+    Symmetric model:
+        p(m1, m2) = p(m1) * p(m2) * (m2/m1)^beta
+    where p(m) is powerlaw+peak.
+    """
+
+    # p(m1) and p(m2)
+    p1 = pm_plpeak(m1, m_min, m_max, alpha, dm_min, mu, sigma, f)
+    p2 = pm_plpeak(m2, m_min, m_max, alpha, dm_min, mu, sigma, f)
+
+    # pairing kernel q^beta
+    q = m2 / m1
+    p_pair = q**beta
+
+    # enforce m2 >= m_min
+    p_pair = jnp.where(m2 < m_min, 0.0, p_pair)
+
+    return jnp.log(p1) + jnp.log(p2) + jnp.log(p_pair)
+
+
+@jit
+def pm_brokenpowerlaw_2peaks(
+    m,
+    alpha_1, alpha_2, break_mass,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2,
+    mu1, sigma1,
+    mu2, sigma2
+):
+    # Smoothing
+    S_low  = Sfilter_low(m,  m_min, dm_min)
+    S_high = Sfilter_high(m, m_max, dm_max)
+
+    # Broken power law
+    pl1 = m**(-alpha_1)
+    pl2 = m**(-alpha_2)
+    p_pl = jnp.where(m < break_mass, pl1, pl2)
+
+    # Gaussian peaks
+    peak1 = jnp.exp(-0.5 * (m - mu1)**2 / sigma1**2) / jnp.sqrt(2*jnp.pi*sigma1**2)
+    peak2 = jnp.exp(-0.5 * (m - mu2)**2 / sigma2**2) / jnp.sqrt(2*jnp.pi*sigma2**2)
+
+    # Mixture
+    f_pl = 1.0 - f1 - f2
+    p_m = S_low * S_high * (f_pl * p_pl + f1 * peak1 + f2 * peak2)
+
+    return p_m
+
+
+@jit
+def logpm1m2_symmetric_brokenpowerlaw_2peaks_massratio(
+    m1, m2,
+    alpha_1, alpha_2, break_mass,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2,
+    mu1, sigma1,
+    mu2, sigma2,
+    beta
+):
+    # p(m1) and p(m2)
+    p1 = pm_brokenpowerlaw_2peaks(
+        m1,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2,
+        mu1, sigma1,
+        mu2, sigma2
+    )
+
+    p2 = pm_brokenpowerlaw_2peaks(
+        m2,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2,
+        mu1, sigma1,
+        mu2, sigma2
+    )
+
+    # Pairing kernel q^beta
+    q = m2 / m1
+    p_pair = q**beta
+    p_pair = jnp.where(m2 < m_min, 0.0, p_pair)
+
+    return jnp.log(p1) + jnp.log(p2) + jnp.log(p_pair)
+
+
+@jit
+def pm_brokenpowerlaw_3peaks(
+    m,
+    alpha_1, alpha_2, break_mass,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2, f3,
+    mu1, sigma1,
+    mu2, sigma2,
+    mu3, sigma3,
+):
+    S_low  = Sfilter_low(m,  m_min, dm_min)
+    S_high = Sfilter_high(m, m_max, dm_max)
+
+    pl1 = m**(-alpha_1)
+    pl2 = m**(-alpha_2)
+    p_pl = jnp.where(m < break_mass, pl1, pl2)
+
+    peak1 = jnp.exp(-0.5 * (m - mu1)**2 / sigma1**2) / jnp.sqrt(2*jnp.pi*sigma1**2)
+    peak2 = jnp.exp(-0.5 * (m - mu2)**2 / sigma2**2) / jnp.sqrt(2*jnp.pi*sigma2**2)
+    peak3 = jnp.exp(-0.5 * (m - mu3)**2 / sigma3**2) / jnp.sqrt(2*jnp.pi*sigma3**2)
+
+    f_pl = 1.0 - f1 - f2 - f3
+
+    p_m = S_low * S_high * (
+        f_pl * p_pl +
+        f1 * peak1 +
+        f2 * peak2 +
+        f3 * peak3
+    )
+    return p_m
+
+
+@jit
+def logpm1m2_symmetric_brokenpowerlaw_3peaks_massratio(
+    m1, m2,
+    alpha_1, alpha_2, break_mass,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2, f3,
+    mu1, sigma1,
+    mu2, sigma2,
+    mu3, sigma3,
+    beta
+):
+    p1 = pm_brokenpowerlaw_3peaks(
+        m1,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu1, sigma1,
+        mu2, sigma2,
+        mu3, sigma3,
+    )
+    p2 = pm_brokenpowerlaw_3peaks(
+        m2,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu1, sigma1,
+        mu2, sigma2,
+        mu3, sigma3,
+    )
+
+    q = m2 / m1
+    p_pair = q**beta
+    p_pair = jnp.where(m2 < m_min, 0.0, p_pair)
+
+    return jnp.log(p1) + jnp.log(p2) + jnp.log(p_pair)
+
+
+@jit
+def pm_symmetric_twopowerlaws_peak(
+    m,
+    alpha_1, alpha_2,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2, f3,
+    mu3, sigma3,
+    beta
+):
+    S_low  = Sfilter_low(m,  m_min, dm_min)
+    S_high = Sfilter_high(m, m_max, dm_max)
+
+    pl1 = m ** (-alpha_1)
+    pl2 = m ** (-alpha_2)
+
+    # enforce ordering: pl1 applies below pl2
+    p_pl = jnp.where(m < (m_min + m_max) / 2.0, pl1, pl2)
+
+    peak3 = jnp.exp(-0.5 * (m - mu3)**2 / sigma3**2) / jnp.sqrt(
+        2 * jnp.pi * sigma3**2
+    )
+
+    f_pl = 1.0 - f1 - f2 - f3
+    p_m = S_low * S_high * (
+        f_pl * p_pl +
+        f1 * pl1 +
+        f2 * pl2 +
+        f3 * peak3
+    )
+
+    return p_m
+
+@jit
+def logpm1m2_symmetric_symmetric_twopowerlaws_peak_massratio(
+    m1, m2,
+    alpha_1, alpha_2,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2, f3,
+    mu3, sigma3,
+    beta
+):
+    p1 = pm_symmetric_twopowerlaws_peak(
+        m1,
+        alpha_1, alpha_2,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu3, sigma3,
+        beta
+    )
+    p2 = pm_symmetric_twopowerlaws_peak(
+        m2,
+        alpha_1, alpha_2,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu3, sigma3,
+        beta
+    )
+
+    q = m2 / m1
+    p_pair = q**beta
+    p_pair = jnp.where(m2 < m_min, 0.0, p_pair)
+
+    return jnp.log(p1) + jnp.log(p2) + jnp.log(p_pair)
+
+
+# ------------------------------------------------------------
+# Redshift evolution
+# ------------------------------------------------------------
 @jit
 def logpowerlaw_redshift(z, gamma):
     return gamma * jnp.log1p(z)
 
 
 @jit
-def log_p_pop_powerlaw_peak(m1, q, z, alpha_1, beta, m_min_1, m_max_1, dm_min_1, mu, sigma, f, gamma):
-    log_dNdm1dq = logpm1m2_plpeak_massratio(m1, q, m_min_1, m_max_1, alpha_1, dm_min_1, beta, mu, sigma, f)
-    #log_pchieff = logpchieff(chieff,mu_s1,sigma_s1)
+def log_p_pop_powerlaw_peak(
+    m1,
+    q,
+    z,
+    alpha_1,
+    beta,
+    m_min_1,
+    m_max_1,
+    dm_min_1,
+    mu,
+    sigma,
+    f,
+    gamma,
+):
+    """
+    Full population log-density for the powerlaw+peak model:
+        p(m1, q, z) ∝ p(m1, q) * p(z) * p(spins)
+    """
+    log_dNdm1dq = logpm1m2_plpeak_massratio(
+        m1,
+        q,
+        m_min_1,
+        m_max_1,
+        alpha_1,
+        dm_min_1,
+        beta,
+        mu,
+        sigma,
+        f,
+    )
 
-    log_p_sz = np.log(0.25) # 1/2 for each spin dimension
+    # Placeholder spin prior (if you later include chi_eff, etc.)
+    log_p_sz = jnp.log(0.25)  # e.g. 1/2 per spin dimension
+
     log_p_z = logpowerlaw_redshift(z, gamma)
     return log_p_sz + log_dNdm1dq + log_p_z
 
-def pop_model_parser(pop_model='powerlaw+peak'):
-    
-    if pop_model=='powerlaw+peak':
-        log_p_pop = log_p_pop_powerlaw_peak
-        
-    if pop_model=='brokenpowerlaw+2peaks':
-        log_p_pop = log_p_pop_brokenpowerlaw_2peaks
+# ------------------------------------------------------------
+# log_p_pops
+# ------------------------------------------------------------
+@jit
+def log_p_pop_brokenpowerlaw_2peaks(
+    m1, q, z,
+    alpha_1, alpha_2, break_mass,
+    m_min, dm_min,
+    m_max, dm_max,
+    f1, f2,
+    mu1, sigma1,
+    mu2, sigma2,
+    beta,
+    gamma
+):
+    """
+    Full population model:
+        p(m1, q, z) = p(m1, q) * p(z) * p(spins)
+    """
 
-    if pop_model=='mock_data':
-        log_p_pop = log_p_pop_mock_data
+    log_m1q = logpm1m2_brokenpowerlaw_2peaks_massratio(
+        m1, q,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2,
+        mu1, sigma1,
+        mu2, sigma2,
+        beta
+    )
 
-    return log_p_pop
+    # spin prior placeholder
+    log_p_spin = jnp.log(0.25)
 
+    # redshift evolution
+    log_p_z = gamma * jnp.log1p(z)
 
-def pop_model_prior_parser(pop_model='powerlaw+peak'):
-    
-    if pop_model=='powerlaw+peak':
-        
-        H0_lo = 20
-        H0_hi = 140
-
-        Om0_lo = Om0grid[0]
-        Om0_hi = Om0grid[-1]
-        
-        log10n0_lo = -8.0
-        log10n0_hi = 0.0
-
-        z1_lo = 1
-        z1_hi = 200
-
-        z50_lo = 0
-        z50_hi = 1
-        
-        delta_lo = -10
-        delta_hi = 10
-        
-        gamma_low = -10
-        gamma_high = 10
-
-        m_min_1_low = 2
-        m_min_1_high = 10
-
-        m_max_1_low = 50
-        m_max_1_high = 100
-
-        alpha_1_low = -4
-        alpha_1_high = 6
-
-        dm_min_1_low = 0
-        dm_min_1_high = 10
-
-        beta_low = -2
-        beta_high = 7
-
-        mu_low = 20
-        mu_high = 50
-
-        sigma_low = 1
-        sigma_high = 10
-
-        f1_low = 0
-        f1_high = 0.15
-
-        f2_low = 0
-        f2_high = 1
-
-        mu_s1_low = -1
-        mu_s1_high = 1
-
-        sigma_s_low = 0.05
-        sigma_s_high = 1
+    return log_m1q + log_p_spin + log_p_z
 
 
-        lower_bound = [alpha_1_low, beta_low, m_min_1_low, m_max_1_low, dm_min_1_low, mu_low, sigma_low, f1_low, gamma_low]
-        
-        
-        upper_bound = [alpha_1_high, beta_high, m_min_1_high, m_max_1_high, dm_min_1_high, mu_high, sigma_high, f1_high, gamma_high]
-        
-        labels = [r'$\alpha$',r'$\beta$', r'$m_{\rm min}$',r'$m_{\rm max}$', r'$dm_{\rm min}$', r'$\mu$', r'$\sigma$', r'$f$', r'$\gamma$']
-    #FIX    
-    if pop_model=='brokenpowerlaw+2peaks':
-        H0_lo = 20
-        H0_hi = 140
+@jit
+def log_p_pop_brokenpowerlaw_3peaks(
+        m1, q, z, 
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu1, sigma1,
+        mu2, sigma2,
+        mu3, sigma3,
+        beta,
+        gamma):
 
-        Om0_lo = Om0grid[0]
-        Om0_hi = Om0grid[-1]
-        
-        log10n0_lo = -8.0
-        log10n0_hi = 0.0
+    log_m1q = logpm1m2_brokenpowerlaw_3peaks_massratio(
+        m1, q,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu1, sigma1,
+        mu2, sigma2,
+        mu3, sigma3,
+        beta
+    )
 
-        z1_lo = 1
-        z1_hi = 200
+    log_p_z = gamma * jnp.log1p(z)
+    log_p_spin = jnp.log(0.25)
 
-        z50_lo = 0
-        z50_hi = 1
-        
-        delta_lo = -50
-        delta_hi = 50
-
-        gamma_low = 0
-        gamma_high = 10
-
-        m_min_1_low = 2
-        m_min_1_high = 10
-
-        m_max_1_low = 40
-        m_max_1_high = 200
-
-        alpha_1_low = 0
-        alpha_1_high = 6
-
-        dm_min_1_low = 1
-        dm_min_1_high = 100
-
-        dm_max_1_low = 1
-        dm_max_1_high = 100
-
-        m_min_2_low = 6
-        m_min_2_high = 50
-
-        m_max_2_low = 40
-        m_max_2_high = 100
-
-        alpha_2_low = 0
-        alpha_2_high = 6
-
-        dm_min_2_low = 1
-        dm_min_2_high = 100
-
-        dm_max_2_low = 1
-        dm_max_2_high = 100
-
-        beta_low = 0
-        beta_high = 6
-
-        mu1_low = 5
-        mu1_high = 20
-
-        mu2_low = 25
-        mu2_high = 40
-
-        sigma_low = 1
-        sigma_high = 10
-
-        f1_low = 0
-        f1_high = 1
-
-        f2_low = 0
-        f2_high = 1
-
-        break_mass_lo = 20
-        break_mass_hi = 50
-        
-        lower_bound = [H0_lo,Om0_lo,
-                       log10n0_lo, z1_lo, z50_lo, delta_lo,gamma_low,
-                       -4,-4,20,2,1,50,1,0,0,5,1,25,1,-2]
-        upper_bound = [H0_hi,Om0_hi,
-                       log10n0_hi, z1_hi, z50_hi, delta_hi,gamma_high,
-                       12,12,50,10,100,300,100,1,1,20,10,40,10,7]
-        
-        labels = [
-            "H0", "Om0",
-            '$\log_{10}n_0$','z1', 'z50', r'$\delta$',
-            "gamma","alpha_1", "alpha_2", "break_mass", "m_min", "dm_min", "m_max", "dm_max",
-            "lam_1", "lam_2", "mpp_1", "sigpp_1",
-            "mpp_2", "sigpp_2","beta"
+    return log_m1q + log_p_z + log_p_spin
 
 
+@jit
+def log_p_pop_twopowerlaws_peak(
+        m1, q, z, 
+        alpha_1, alpha_2,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu3, sigma3,
+        beta,
+        gamma):
+
+    log_m1q = logpm1m2_twopowerlaws_peak_massratio(
+        m1, q,
+        alpha_1, alpha_2,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu3, sigma3,
+        beta
+    )
+
+    log_p_z = gamma * jnp.log1p(z)
+    log_p_spin = jnp.log(0.25)
+
+    return log_m1q + log_p_z + log_p_spin
+
+
+@jit
+def log_p_pop_symmetric_plpeak(
+        m1, q, z, 
+        alpha,
+        beta,
+        m_min,
+        m_max,
+        dm_min,
+        mu,
+        sigma,
+        f,
+        gamma):
+
+    # convert q → m2
+    m2 = q * m1
+
+    log_m1m2 = logpm1m2_symmetric_plpeak_massratio(
+        m1, m2,
+        m_min, m_max,
+        alpha, dm_min,
+        mu, sigma, f,
+        beta
+    )
+
+    log_p_z = gamma * jnp.log1p(z)
+    log_p_spin = jnp.log(0.25)
+
+    return log_m1m2 + log_p_z + log_p_spin
+
+
+@jit
+def log_p_pop_symmetric_brokenpowerlaw_2peaks(
+        m1, q, z, 
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2,
+        mu1, sigma1,
+        mu2, sigma2,
+        beta,
+        gamma):
+
+    m2 = q * m1
+
+    log_m1m2 = logpm1m2_symmetric_brokenpowerlaw_2peaks_massratio(
+        m1, m2,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2,
+        mu1, sigma1,
+        mu2, sigma2,
+        beta
+    )
+
+    log_p_z = gamma * jnp.log1p(z)
+    log_p_spin = jnp.log(0.25)
+
+    return log_m1m2 + log_p_z + log_p_spin
+
+
+@jit
+def log_p_pop_symmetric_brokenpowerlaw_3peaks(
+        m1, q, z,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu1, sigma1,
+        mu2, sigma2,
+        mu3, sigma3,
+        beta,
+        gamma):
+
+    m2 = q * m1
+
+    log_m1m2 = logpm1m2_symmetric_brokenpowerlaw_3peaks_massratio(
+        m1, m2,
+        alpha_1, alpha_2, break_mass,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu1, sigma1,
+        mu2, sigma2,
+        mu3, sigma3,
+        beta
+    )
+
+    log_p_z = gamma * jnp.log1p(z)
+    log_p_spin = jnp.log(0.25)
+
+    return log_m1m2 + log_p_z + log_p_spin
+
+
+@jit
+def log_p_pop_symmetric_twopowerlaws_peak(
+        m1, q, z, 
+        alpha_1, alpha_2,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu3, sigma3,
+        beta,
+        gamma):
+
+    m2 = q * m1
+
+    log_m1m2 = logpm1m2_symmetric_symmetric_twopowerlaws_peak_massratio(
+        m1, m2,
+        alpha_1, alpha_2,
+        m_min, dm_min,
+        m_max, dm_max,
+        f1, f2, f3,
+        mu3, sigma3,
+        beta
+    )
+
+    log_p_z = gamma * jnp.log1p(z)
+    log_p_spin = jnp.log(0.25)
+
+    return log_m1m2 + log_p_z + log_p_spin
+
+
+# ------------------------------------------------------------
+# Model parser
+# ------------------------------------------------------------
+def pop_model_parser(pop_model):
+    if pop_model == "powerlaw+peak":
+        return log_p_pop_powerlaw_peak
+    elif pop_model == "brokenpowerlaw+2peaks":
+        return log_p_pop_brokenpowerlaw_2peaks
+    elif pop_model == "brokenpowerlaw+3peaks":
+        return log_p_pop_brokenpowerlaw_3peaks
+    elif pop_model == "twopowerlaws+peak":
+        return log_p_pop_twopowerlaws_peak
+    elif pop_model == "symmetric_powerlaw+peak":
+        return log_p_pop_symmetric_plpeak
+    elif pop_model == "symmetric_brokenpowerlaw+2peaks":
+        return log_p_pop_symmetric_brokenpowerlaw_2peaks
+    elif pop_model == "symmetric_brokenpowerlaw+3peaks":
+        return log_p_pop_symmetric_brokenpowerlaw_3peaks
+    elif pop_model == "symmetric_twopowerlaws+peak":
+        return log_p_pop_symmetric_twopowerlaws_peak
+    elif pop_model == "mock_data":
+        return log_p_pop_mock_data
+    else:
+        raise ValueError(f"Unknown population model: {pop_model}")
+
+
+# ------------------------------------------------------------
+# Prior parser
+# ------------------------------------------------------------
+def pop_model_prior_parser(pop_model):
+    if pop_model == "powerlaw+peak":
+        model_name = get_model_name_latex(pop_model)
+
+        # Only keep what you actually use for bounds
+        m_min_1_low, m_min_1_high = 2.0, 10.0
+        m_max_1_low, m_max_1_high = 50.0, 100.0
+
+        alpha_1_low, alpha_1_high = -4.0, 6.0
+        dm_min_1_low, dm_min_1_high = 0.0, 10.0
+
+        beta_low, beta_high = -2.0, 7.0
+
+        mu_low, mu_high = 20.0, 50.0
+        sigma_low, sigma_high = 1.0, 10.0
+
+        f_low, f_high = 0.0, 0.15
+
+        gamma_low, gamma_high = -10.0, 10.0
+
+        lower_bound = [
+            alpha_1_low,
+            beta_low,
+            m_min_1_low,
+            m_max_1_low,
+            dm_min_1_low,
+            mu_low,
+            sigma_low,
+            f_low,
+            gamma_low,
         ]
 
-    if pop_model=='mock_data':
-        log_p_pop = log_p_pop_mock_data
+        upper_bound = [
+            alpha_1_high,
+            beta_high,
+            m_min_1_high,
+            m_max_1_high,
+            dm_min_1_high,
+            mu_high,
+            sigma_high,
+            f_high,
+            gamma_high,
+        ]
 
-    return lower_bound, upper_bound, labels
+        labels = [
+            r"$\alpha$",
+            r"$\beta$",
+            r"$m_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm min}$",
+            r"$\mu$",
+            r"$\sigma$",
+            r"$f$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+
+    elif pop_model == "brokenpowerlaw+2peaks":
+        model_name = get_model_name_latex(pop_model)
+
+        # -----------------------------
+        # Parameter bounds (cleaned)
+        # -----------------------------
+        alpha_1_low, alpha_1_high = 0.0, 6.0
+        alpha_2_low, alpha_2_high = 0.0, 6.0
+
+        break_mass_lo, break_mass_hi = 20.0, 50.0
+
+        m_min_low, m_min_high = 2.0, 10.0
+        dm_min_low, dm_min_high = 1.0, 100.0
+
+        m_max_low, m_max_high = 40.0, 200.0
+        dm_max_low, dm_max_high = 1.0, 100.0
+
+        f1_low, f1_high = 0.0, 1.0
+        f2_low, f2_high = 0.0, 1.0
+
+        mu1_low, mu1_high = 5.0, 20.0
+        sigma1_low, sigma1_high = 1.0, 10.0
+
+        mu2_low, mu2_high = 25.0, 40.0
+        sigma2_low, sigma2_high = 1.0, 10.0
+
+        beta_low, beta_high = 0.0, 6.0
+        gamma_low, gamma_high = -10.0, 10.0
+
+        # -----------------------------
+        # Final theta ordering
+        # -----------------------------
+        lower_bound = [
+            alpha_1_low,
+            alpha_2_low,
+            break_mass_lo,
+            m_min_low,
+            dm_min_low,
+            m_max_low,
+            dm_max_low,
+            f1_low,
+            f2_low,
+            mu1_low,
+            sigma1_low,
+            mu2_low,
+            sigma2_low,
+            beta_low,
+            gamma_low,
+        ]
+
+        upper_bound = [
+            alpha_1_high,
+            alpha_2_high,
+            break_mass_hi,
+            m_min_high,
+            dm_min_high,
+            m_max_high,
+            dm_max_high,
+            f1_high,
+            f2_high,
+            mu1_high,
+            sigma1_high,
+            mu2_high,
+            sigma2_high,
+            beta_high,
+            gamma_high,
+        ]
+
+        labels = [
+            r"$\alpha_1$",
+            r"$\alpha_2$",
+            r"$m_{\rm break}$",
+            r"$m_{\rm min}$",
+            r"$dm_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm max}$",
+            r"$f_1$",
+            r"$f_2$",
+            r"$\mu_1$",
+            r"$\sigma_1$",
+            r"$\mu_2$",
+            r"$\sigma_2$",
+            r"$\beta$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+    
+    elif pop_model == "brokenpowerlaw+3peaks":
+        model_name = get_model_name_latex(pop_model)
+
+        alpha_1_low, alpha_1_high = 0.0, 6.0
+        alpha_2_low, alpha_2_high = 0.0, 6.0
+
+        break_mass_lo, break_mass_hi = 20.0, 50.0
+
+        m_min_low, m_min_high = 2.0, 10.0
+        dm_min_low, dm_min_high = 1.0, 100.0
+
+        m_max_low, m_max_high = 40.0, 200.0
+        dm_max_low, dm_max_high = 1.0, 100.0
+
+        f1_low, f1_high = 0.0, 1.0
+        f2_low, f2_high = 0.0, 1.0
+        f3_low, f3_high = 0.0, 1.0
+
+        mu1_low, mu1_high = 5.0, 20.0
+        sigma1_low, sigma1_high = 1.0, 10.0
+
+        mu2_low, mu2_high = 25.0, 40.0
+        sigma2_low, sigma2_high = 1.0, 10.0
+
+        # NEW: third peak
+        mu3_low, mu3_high = 50.0, 100.0
+        sigma3_low, sigma3_high = 1.0, 20.0
+
+        beta_low, beta_high = 0.0, 6.0
+        gamma_low, gamma_high = -10.0, 10.0
+
+        lower_bound = [
+            alpha_1_low, alpha_2_low,
+            break_mass_lo,
+            m_min_low, dm_min_low,
+            m_max_low, dm_max_low,
+            f1_low, f2_low, f3_low,
+            mu1_low, sigma1_low,
+            mu2_low, sigma2_low,
+            mu3_low, sigma3_low,
+            beta_low,
+            gamma_low,
+        ]
+
+        upper_bound = [
+            alpha_1_high, alpha_2_high,
+            break_mass_hi,
+            m_min_high, dm_min_high,
+            m_max_high, dm_max_high,
+            f1_high, f2_high, f3_high,
+            mu1_high, sigma1_high,
+            mu2_high, sigma2_high,
+            mu3_high, sigma3_high,
+            beta_high,
+            gamma_high,
+        ]
+
+        labels = [
+            r"$\alpha_1$",
+            r"$\alpha_2$",
+            r"$m_{\rm break}$",
+            r"$m_{\rm min}$",
+            r"$dm_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm max}$",
+            r"$f_1$",
+            r"$f_2$",
+            r"$f_3$",
+            r"$\mu_1$",
+            r"$\sigma_1$",
+            r"$\mu_2$",
+            r"$\sigma_2$",
+            r"$\mu_3$",
+            r"$\sigma_3$",
+            r"$\beta$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+
+    elif pop_model == "twopowerlaws+peak":
+        model_name = get_model_name_latex(pop_model)
+
+        alpha_1_low, alpha_1_high = 0.0, 6.0
+        alpha_2_low, alpha_2_high = 0.0, 6.0
+
+        m_min_low, m_min_high = 2.0, 10.0
+        dm_min_low, dm_min_high = 1.0, 50.0
+
+        m_max_low, m_max_high = 40.0, 200.0
+        dm_max_low, dm_max_high = 1.0, 50.0
+
+        f1_low, f1_high = 0.0, 1.0
+        f2_low, f2_high = 0.0, 1.0
+        f3_low, f3_high = 0.0, 1.0
+
+        mu3_low, mu3_high = 50.0, 100.0
+        sigma3_low, sigma3_high = 1.0, 20.0
+
+        beta_low, beta_high = 0.0, 6.0
+        gamma_low, gamma_high = -10.0, 10.0
+
+        lower_bound = [
+            alpha_1_low, alpha_2_low,
+            m_min_low, dm_min_low,
+            m_max_low, dm_max_low,
+            f1_low, f2_low, f3_low,
+            mu3_low, sigma3_low,
+            beta_low,
+            gamma_low,
+        ]
+
+        upper_bound = [
+            alpha_1_high, alpha_2_high,
+            m_min_high, dm_min_high,
+            m_max_high, dm_max_high,
+            f1_high, f2_high, f3_high,
+            mu3_high, sigma3_high,
+            beta_high,
+            gamma_high,
+        ]
+
+        labels = [
+            r"$\alpha_1$",
+            r"$\alpha_2$",
+            r"$m_{\rm min}$",
+            r"$dm_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm max}$",
+            r"$f_1$",
+            r"$f_2$",
+            r"$f_3$",
+            r"$\mu_3$",
+            r"$\sigma_3$",
+            r"$\beta$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+    
+    elif pop_model == "symmetric_powerlaw+peak":
+        model_name = get_model_name_latex(pop_model)
+
+        alpha_low, alpha_high = -4.0, 6.0
+        beta_low, beta_high = -2.0, 7.0
+        m_min_low, m_min_high = 2.0, 10.0
+        m_max_low, m_max_high = 50.0, 100.0
+        dm_min_low, dm_min_high = 0.0, 10.0
+        mu_low, mu_high = 20.0, 50.0
+        sigma_low, sigma_high = 1.0, 10.0
+        f_low, f_high = 0.0, 0.15
+        gamma_low, gamma_high = -10.0, 10.0
+
+        lower_bound = [
+            alpha_low, beta_low,
+            m_min_low, m_max_low, dm_min_low,
+            mu_low, sigma_low, f_low,
+            gamma_low
+        ]
+
+        upper_bound = [
+            alpha_high, beta_high,
+            m_min_high, m_max_high, dm_min_high,
+            mu_high, sigma_high, f_high,
+            gamma_high
+        ]
+
+        labels = [
+            r"$\alpha$",
+            r"$\beta$",
+            r"$m_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm min}$",
+            r"$\mu$",
+            r"$\sigma$",
+            r"$f$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+
+    elif pop_model == "symmetric_brokenpowerlaw+2peaks":
+        model_name = get_model_name_latex(pop_model)
+
+        alpha_1_low, alpha_1_high = 0.0, 6.0
+        alpha_2_low, alpha_2_high = 0.0, 6.0
+
+        break_mass_lo, break_mass_hi = 20.0, 50.0
+
+        m_min_low, m_min_high = 2.0, 10.0
+        dm_min_low, dm_min_high = 1.0, 100.0
+
+        m_max_low, m_max_high = 40.0, 200.0
+        dm_max_low, dm_max_high = 1.0, 100.0
+
+        f1_low, f1_high = 0.0, 1.0
+        f2_low, f2_high = 0.0, 1.0
+
+        mu1_low, mu1_high = 5.0, 20.0
+        sigma1_low, sigma1_high = 1.0, 10.0
+
+        mu2_low, mu2_high = 25.0, 40.0
+        sigma2_low, sigma2_high = 1.0, 10.0
+
+        beta_low, beta_high = 0.0, 6.0
+        gamma_low, gamma_high = -10.0, 10.0
+
+        lower_bound = [
+            alpha_1_low, alpha_2_low,
+            break_mass_lo,
+            m_min_low, dm_min_low,
+            m_max_low, dm_max_low,
+            f1_low, f2_low,
+            mu1_low, sigma1_low,
+            mu2_low, sigma2_low,
+            beta_low,
+            gamma_low,
+        ]
+
+        upper_bound = [
+            alpha_1_high, alpha_2_high,
+            break_mass_hi,
+            m_min_high, dm_min_high,
+            m_max_high, dm_max_high,
+            f1_high, f2_high,
+            mu1_high, sigma1_high,
+            mu2_high, sigma2_high,
+            beta_high,
+            gamma_high,
+        ]
+
+        labels = [
+            r"$\alpha_1$",
+            r"$\alpha_2$",
+            r"$m_{\rm break}$",
+            r"$m_{\rm min}$",
+            r"$dm_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm max}$",
+            r"$f_1$",
+            r"$f_2$",
+            r"$\mu_1$",
+            r"$\sigma_1$",
+            r"$\mu_2$",
+            r"$\sigma_2$",
+            r"$\beta$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+    
+    elif pop_model == "symmetric_brokenpowerlaw+3peaks":
+        model_name = get_model_name_latex(pop_model)
+
+        alpha_1_low, alpha_1_high = 0.0, 6.0
+        alpha_2_low, alpha_2_high = 0.0, 6.0
+
+        break_mass_lo, break_mass_hi = 20.0, 50.0
+
+        m_min_low, m_min_high = 2.0, 10.0
+        dm_min_low, dm_min_high = 1.0, 100.0
+
+        m_max_low, m_max_high = 40.0, 200.0
+        dm_max_low, dm_max_high = 1.0, 100.0
+
+        f1_low, f1_high = 0.0, 1.0
+        f2_low, f2_high = 0.0, 1.0
+        f3_low, f3_high = 0.0, 1.0
+
+        mu1_low, mu1_high = 5.0, 20.0
+        sigma1_low, sigma1_high = 1.0, 10.0
+
+        mu2_low, mu2_high = 25.0, 40.0
+        sigma2_low, sigma2_high = 1.0, 10.0
+
+        mu3_low, mu3_high = 50.0, 100.0
+        sigma3_low, sigma3_high = 1.0, 20.0
+
+        beta_low, beta_high = 0.0, 6.0
+        gamma_low, gamma_high = -10.0, 10.0
+
+        lower_bound = [
+            alpha_1_low, alpha_2_low,
+            break_mass_lo,
+            m_min_low, dm_min_low,
+            m_max_low, dm_max_low,
+            f1_low, f2_low, f3_low,
+            mu1_low, sigma1_low,
+            mu2_low, sigma2_low,
+            mu3_low, sigma3_low,
+            beta_low,
+            gamma_low,
+        ]
+
+        upper_bound = [
+            alpha_1_high, alpha_2_high,
+            break_mass_hi,
+            m_min_high, dm_min_high,
+            m_max_high, dm_max_high,
+            f1_high, f2_high, f3_high,
+            mu1_high, sigma1_high,
+            mu2_high, sigma2_high,
+            mu3_high, sigma3_high,
+            beta_high,
+            gamma_high,
+        ]
+
+        labels = [
+            r"$\alpha_1$",
+            r"$\alpha_2$",
+            r"$m_{\rm break}$",
+            r"$m_{\rm min}$",
+            r"$dm_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm max}$",
+            r"$f_1$",
+            r"$f_2$",
+            r"$f_3$",
+            r"$\mu_1$",
+            r"$\sigma_1$",
+            r"$\mu_2$",
+            r"$\sigma_2$",
+            r"$\mu_3$",
+            r"$\sigma_3$",
+            r"$\beta$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+    
+    elif pop_model == "symmetric_twopowerlaws+peak":
+        model_name = get_model_name_latex(pop_model)
+
+        alpha_1_low, alpha_1_high = 0.0, 6.0
+        alpha_2_low, alpha_2_high = 0.0, 6.0
+
+        m_min_low, m_min_high = 2.0, 10.0
+        dm_min_low, dm_min_high = 1.0, 50.0
+
+        m_max_low, m_max_high = 40.0, 200.0
+        dm_max_low, dm_max_high = 1.0, 50.0
+
+        f1_low, f1_high = 0.0, 1.0
+        f2_low, f2_high = 0.0, 1.0
+        f3_low, f3_high = 0.0, 1.0
+
+        mu3_low, mu3_high = 50.0, 100.0
+        sigma3_low, sigma3_high = 1.0, 20.0
+
+        beta_low, beta_high = 0.0, 6.0
+        gamma_low, gamma_high = -10.0, 10.0
+
+        lower_bound = [
+            alpha_1_low, alpha_2_low,
+            m_min_low, dm_min_low,
+            m_max_low, dm_max_low,
+            f1_low, f2_low, f3_low,
+            mu3_low, sigma3_low,
+            beta_low,
+            gamma_low,
+        ]
+
+        upper_bound = [
+            alpha_1_high, alpha_2_high,
+            m_min_high, dm_min_high,
+            m_max_high, dm_max_high,
+            f1_high, f2_high, f3_high,
+            mu3_high, sigma3_high,
+            beta_high,
+            gamma_high,
+        ]
+
+        labels = [
+            r"$\alpha_1$",
+            r"$\alpha_2$",
+            r"$m_{\rm min}$",
+            r"$dm_{\rm min}$",
+            r"$m_{\rm max}$",
+            r"$dm_{\rm max}$",
+            r"$f_1$",
+            r"$f_2$",
+            r"$f_3$",
+            r"$\mu_3$",
+            r"$\sigma_3$",
+            r"$\beta$",
+            r"$\gamma$",
+        ]
+
+        return lower_bound, upper_bound, labels, model_name
+
+    elif pop_model == "mock_data":
+        # If you have a dedicated prior for mock_data, define it here
+        raise NotImplementedError("Prior for 'mock_data' not implemented yet.")
+
+    else:
+        raise ValueError(f"Unknown population model: {pop_model}")
