@@ -71,13 +71,32 @@ def print_bayes_factors(labels, logZs):
                 print(f"{labels[i]} vs {labels[j]}:  log10 BF = {logZs[i] - logZs[j]:.3f}")
 
 
-def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 10)):
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+
+def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 10),
+                                      cmap_name="coolwarm"):
     """
     Full pairwise log10 Bayes factor matrix.
-    Color-coded by Jeffreys scale.
+    Continuous colormap based on BF values (no Jeffreys scale).
     """
     n = len(labels)
     fig, axes = plt.subplots(n, n, figsize=figsize)
+
+    # Compute all pairwise BF values for normalization
+    bf_matrix = np.full((n, n), np.nan)
+    for i in range(n):
+        for j in range(n):
+            if log10Zs[i] is not None and log10Zs[j] is not None:
+                bf_matrix[i, j] = log10Zs[i] - log10Zs[j]
+
+    # Continuous normalization across all finite BF values
+    vmin = np.nanmin(bf_matrix)
+    vmax = np.nanmax(bf_matrix)
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = cm.get_cmap(cmap_name)
 
     for i in range(n):
         for j in range(n):
@@ -89,10 +108,12 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
                 continue
 
             if log10Zs[i] is not None and log10Zs[j] is not None:
-                bf = log10Zs[i] - log10Zs[j]
+                bf = bf_matrix[i, j]
                 bf_err = np.sqrt(log10Zerrs[i]**2 + log10Zerrs[j]**2)
-                color = jeffreys_color(bf)
-                ax.set_facecolor(color)
+
+                # Continuous colormap
+                ax.set_facecolor(cmap(norm(bf)))
+
                 ax.text(0.5, 0.55, f"{bf:.2f}", ha="center", va="center", fontsize=14)
                 ax.text(0.5, 0.25, f"±{bf_err:.2f}", ha="center", va="center", fontsize=10)
             else:
@@ -101,26 +122,17 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
 
             ax.set_xticks([]); ax.set_yticks([])
 
-    fig.suptitle("Pairwise log10 Bayes Factors", fontsize=20)
+    # Add continuous colorbar
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), shrink=0.8)
+    cbar.set_label("log10 Bayes Factor (Model i − Model j)", fontsize=14)
+
+    fig.suptitle("Pairwise log10 Bayes Factors (Continuous Colormap)", fontsize=20)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
+
     return fig
-
-
-def jeffreys_color(bf):
-    """
-    Color coding for log10 Bayes factors using Jeffreys scale.
-    """
-    if bf is None:
-        return "lightgray"
-    bf = abs(bf)
-    if bf < 0.5:
-        return "#d9d9d9"   # very weak
-    elif bf < 1.0:
-        return "#a6bddb"   # substantial
-    elif bf < 2.0:
-        return "#3690c0"   # strong
-    else:
-        return "#034e7b"   # decisive
 
 
 # ------------------------------------------------------------
@@ -279,17 +291,8 @@ def plot_1d_spectrum(
             label=labels[i],
         )
 
-        ax.plot(xgrid, np.asarray(median), color=color, lw=2.5)
-
         mean_curve = np.asarray(ppd.mean(axis=0))
         means.append(mean_curve)
-        ax.plot(
-            xgrid, mean_curve,
-            color=color,
-            linestyle="--",
-            lw=2.0,
-            alpha=0.9,
-        )
 
     if xlim is None:
         xlim = (xgrid.min(), xgrid.max())
@@ -382,8 +385,8 @@ def main():
     parser.add_argument("--mmin", type=float, default=1.0)
     parser.add_argument("--mmax", type=float, default=100.0)
     parser.add_argument("--nm", type=int, default=300)
-    parser.add_argument("--nq", type=int, default=200)
-    parser.add_argument("--nz", type=int, default=200)
+    parser.add_argument("--nq", type=int, default=100)
+    parser.add_argument("--nz", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--cred_lo", type=float, default=5.0)
     parser.add_argument("--cred_hi", type=float, default=95.0)
@@ -402,6 +405,8 @@ def main():
 
     logZs      = []
     logZerrs   = []
+
+    limits = (args.cred_lo, args.cred_hi)
 
     for run_dir in args.run_dirs:
         print(f"\n=== Processing model: {run_dir} ===")
@@ -426,16 +431,27 @@ def main():
             )
         )
 
-        pm1_list.append(pm1_samples)
-        pm2_list.append(pm2_samples)
-        pq_list.append(pq_samples)
-        pz_list.append(pz_samples)
-        pm1m2_list.append(pm1m2_samples)
+        # Summaries
+        pm1_med, pm1_lo, pm1_hi = summarize_ppd(pm1_samples, limits)
+        pm2_med, pm2_lo, pm2_hi = summarize_ppd(pm2_samples, limits)
+        pq_med,  pq_lo,  pq_hi  = summarize_ppd(pq_samples,  limits)
+        pz_med,  pz_lo,  pz_hi  = summarize_ppd(pz_samples,  limits)
+
+        #pm1m2_med = summarize_ppd_2d(pm1m2_samples)
+
+        # Store only summaries
+        pm1_list.append((pm1_med, pm1_lo, pm1_hi))
+        pm2_list.append((pm2_med, pm2_lo, pm2_hi))
+        pq_list.append((pq_med, pq_lo, pq_hi))
+        pz_list.append((pz_med, pz_lo, pz_hi))
+        #pm1m2_list.append(pm1m2_med)
+
+        # Free GPU memory
+        del pm1_samples, pm2_samples, pq_samples, pz_samples, pm1m2_samples
+        jax.clear_caches()
 
         model_label = settings.get("model_name", os.path.basename(run_dir))
         labels.append(model_label)
-
-    limits = (args.cred_lo, args.cred_hi)
 
     # p(m1)
     fig_m1 = plot_1d_spectrum(
@@ -491,13 +507,13 @@ def main():
     )
     fig_z.savefig("pz_all_models.pdf")
 
-    # joint p(m1,m2)
-    fig_joint = plot_joint_m1m2(
-        mgrid,
-        ppd2d_list=pm1m2_list,
-        labels=labels,
-    )
-    fig_joint.savefig("pm1m2_all_models.pdf")
+#     # joint p(m1,m2)
+#     fig_joint = plot_joint_m1m2(
+#         mgrid,
+#         ppd2d_list=pm1m2_list,
+#         labels=labels,
+#     )
+#     fig_joint.savefig("pm1m2_all_models.pdf")
 
     # ------------------------------------------------------------
     # Evidence comparison (separate figure)
