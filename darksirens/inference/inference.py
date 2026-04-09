@@ -157,6 +157,19 @@ def main():
     print(f"Running sampler: {method}")
 
     # --------------------------------------------------------
+    # Run sampler
+    # --------------------------------------------------------
+    results = run_sampler(
+        method=method,
+        likelihood=likelihood,
+        prior_transform=prior_transform,
+        labels=labels,
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
+        opts=opts
+    )
+    
+    # --------------------------------------------------------
     # Create run directory
     # --------------------------------------------------------
     timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
@@ -175,19 +188,6 @@ def main():
         "sampler": method,
         "model_name": model_name,
     })
-
-    # --------------------------------------------------------
-    # Run sampler
-    # --------------------------------------------------------
-    results = run_sampler(
-        method=method,
-        likelihood=likelihood,
-        prior_transform=prior_transform,
-        labels=labels,
-        lower_bound=lower_bound,
-        upper_bound=upper_bound,
-        opts=opts
-    )
 
     # --------------------------------------------------------
     # Save results
