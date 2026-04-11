@@ -17,6 +17,7 @@ from argparse import ArgumentParser
 
 from darksirens.utils.cosmology import *
 from darksirens.utils.utils import *
+from darksirens.utils.plotting import make_production_corner
 from darksirens.inference.likelihood import darksiren_log_likelihood
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.em.utils import load_survey
@@ -130,6 +131,11 @@ def main():
 
     pop_params_fid = get_fixed_population_params(opts.pop_model)
     prior_transform = make_prior_transform(lower_bound, upper_bound)
+    
+    print(labels)
+    print(lower_bound)
+    print(upper_bound)
+
 
     # --------------------------------------------------------
     # Build likelihood
@@ -199,9 +205,8 @@ def main():
         # Extract just the samples array for corner plot
         samples = results["samples"]
 
-        import corner
-        fig = corner.corner(samples, labels=labels)
-        fig.savefig(os.path.join(run_dir, "corner.pdf"))
+        fig = make_production_corner(samples, labels)
+        fig.savefig(os.path.join(run_dir, "corner.pdf"), bbox_inches='tight', dpi=200)
 
         print(f"Saved samples, evidence info, and corner plot to {run_dir}")
     else:
