@@ -48,16 +48,43 @@ def load_run(run_dir):
 # Evidence plotting
 # ------------------------------------------------------------
 def plot_model_evidences(labels, logZs, logZerrs, figsize=(10, 6)):
+    # 1. Convert to numpy arrays for calculation
+    logZs = np.array(logZs)
+    logZerrs = np.array(logZerrs)
+    
+    # 2. Calculate relative evidence (Delta log10 Z)
+    # The "best" model is the one with the maximum logZ
+    best_logZ = np.max(logZs)
+    delta_logZs = logZs - best_logZ
+
     fig, ax = plt.subplots(figsize=figsize)
 
     xs = np.arange(len(labels))
-    ax.bar(xs, logZs, yerr=logZerrs, color=c[:len(labels)], alpha=0.8)
+    
+    # Using a color cycle if 'c' isn't explicitly passed
+    colors = plt.cm.tab10(np.linspace(0, 1, len(labels)))
+    
+    # 3. Plot the delta values
+    bars = ax.bar(xs, delta_logZs, yerr=logZerrs, color=colors, alpha=0.8, capsize=5)
 
+    # 4. Formatting
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=18)
-    ax.set_ylabel(r"$\log_{10} Z$", fontsize=24)
-    ax.set_title("Model Evidences", fontsize=26)
+    
+    # Update label to show it is relative
+    ax.set_ylabel(r"$\Delta \log_{10} Z$ (Relative to Best)", fontsize=22)
+    ax.set_title("Model Comparison (Relative Evidence)", fontsize=26)
     ax.tick_params(labelsize=18)
+    
+    # Add a horizontal dashed line at 0 for the reference model
+    ax.axhline(0, color='black', lw=1.5, ls='--')
+
+    # Optional: Add text labels on top/bottom of bars to show exact delta values
+    for bar, val in zip(bars, delta_logZs):
+        yval = bar.get_height()
+        # Offset text slightly below the bar
+        ax.text(bar.get_x() + bar.get_width()/2, yval - (0.05 * abs(np.min(delta_logZs))), 
+                f'{val:.2f}', ha='center', va='top', fontsize=14, fontweight='bold')
 
     fig.tight_layout()
     return fig
@@ -71,18 +98,15 @@ def print_bayes_factors(labels, logZs):
                 print(f"{labels[i]} vs {labels[j]}:  log10 BF = {logZs[i] - logZs[j]:.3f}")
 
 
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 import matplotlib.colors as mcolors
+import matplotlib.cm as cm
+import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 10),
-                                      cmap_name="coolwarm"):
-    """
-    Full pairwise log10 Bayes factor matrix.
-    Continuous colormap based on BF values (no Jeffreys scale).
-    """
+def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 10), 
+                                     cmap_name="coolwarm"):
     n = len(labels)
+    # Use layout=None and we will handle the colorbar axis manually
     fig, axes = plt.subplots(n, n, figsize=figsize)
 
     # Compute all pairwise BF values for normalization
@@ -92,7 +116,6 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
             if log10Zs[i] is not None and log10Zs[j] is not None:
                 bf_matrix[i, j] = log10Zs[i] - log10Zs[j]
 
-    # Continuous normalization across all finite BF values
     vmin = np.nanmin(bf_matrix)
     vmax = np.nanmax(bf_matrix)
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
@@ -103,34 +126,39 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
             ax = axes[i, j]
 
             if i == j:
-                ax.text(0.5, 0.5, labels[i], ha="center", va="center", fontsize=14)
-                ax.set_xticks([]); ax.set_yticks([])
-                continue
-
-            if log10Zs[i] is not None and log10Zs[j] is not None:
+                ax.text(0.5, 0.5, labels[i], ha="center", va="center", fontsize=12, weight='bold')
+            elif log10Zs[i] is not None and log10Zs[j] is not None:
                 bf = bf_matrix[i, j]
                 bf_err = np.sqrt(log10Zerrs[i]**2 + log10Zerrs[j]**2)
-
-                # Continuous colormap
                 ax.set_facecolor(cmap(norm(bf)))
-
-                ax.text(0.5, 0.55, f"{bf:.2f}", ha="center", va="center", fontsize=14)
-                ax.text(0.5, 0.25, f"±{bf_err:.2f}", ha="center", va="center", fontsize=10)
+                ax.text(0.5, 0.55, f"{bf:.2f}", ha="center", va="center", fontsize=12)
+                ax.text(0.5, 0.30, f"±{bf_err:.2f}", ha="center", va="center", fontsize=9)
             else:
                 ax.set_facecolor("lightgray")
-                ax.text(0.5, 0.5, "—", ha="center", va="center", fontsize=14)
+                ax.text(0.5, 0.5, "—", ha="center", va="center", fontsize=12)
 
             ax.set_xticks([]); ax.set_yticks([])
 
-    # Add continuous colorbar
+    # --- THE FIX ---
+    # 1. Create a "divider" based on the last column of axes
+    # This ensures the colorbar matches the height of the grid
+    divider = make_axes_locatable(axes[0, -1]) 
+    
+    # Actually, to cover the whole height of the grid, we'll use a more manual 'cax' approach
+    # We'll shrink the grid slightly to make a dedicated home for the colorbar.
+    fig.subplots_adjust(right=0.85) # Make room on the right
+    cax = fig.add_axes([0.88, 0.15, 0.03, 0.7]) # [left, bottom, width, height]
+
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
     sm.set_array([])
 
-    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), shrink=0.8)
-    cbar.set_label("log10 Bayes Factor (Model i − Model j)", fontsize=14)
+    cbar = fig.colorbar(sm, cax=cax)
+    cbar.set_label(r"$\log_{10}$ Bayes Factor (Model $i$ $-$ Model $j$)", fontsize=14)
 
-    fig.suptitle("Pairwise log10 Bayes Factors (Continuous Colormap)", fontsize=20)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.suptitle(r"Pairwise $\log_{10}$ Bayes Factors", fontsize=18, y=0.98)
+    
+    # We use subplots_adjust instead of tight_layout to keep our manual cax in place
+    fig.subplots_adjust(top=0.92, wspace=0.1, hspace=0.1)
 
     return fig
 
@@ -156,7 +184,7 @@ def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid):
 
     @jax.jit
     def single_theta(theta):
-        logp = pop_model(m1_grid, q_grid, z_grid, *theta)
+        logp = pop_model(m1_grid, q_grid, z_grid, theta)
         p = jnp.exp(logp)
 
         p_m1 = jnp.trapezoid(jnp.trapezoid(p, zgrid, axis=2), qgrid, axis=1)
@@ -272,7 +300,9 @@ def plot_1d_spectrum(
     logy=True,
 ):
     if colors is None:
-        colors = plt.cm.tab10.colors
+        # Using the colorblind palette for better accessibility
+        import seaborn as sns
+        colors = sns.color_palette('colorblind')
 
     xgrid = np.asarray(xgrid)
     fig, ax = plt.subplots(figsize=figsize)
@@ -280,26 +310,38 @@ def plot_1d_spectrum(
     means = []
     for i, ppd in enumerate(ppd_list):
         ppd = jnp.asarray(ppd)
+        # Assuming summarize_ppd is defined in your environment
         median, lower, upper = summarize_ppd(ppd, limits)
 
         color = colors[i % len(colors)]
 
+        # --- The Shading ---
         ax.fill_between(
             xgrid, np.asarray(lower), np.asarray(upper),
-            alpha=0.25,
+            alpha=0.15, # Slightly lighter to make the lines pop
             color=color,
             label=labels[i],
+            lw=0 # Remove the default edge from the fill
         )
+
+        # --- THE FIX: The thin boundary lines ---
+        # We plot these separately to have full control over the linewidth
+        ax.plot(xgrid, np.asarray(lower), color=color, lw=0.8, alpha=0.6)
+        ax.plot(xgrid, np.asarray(upper), color=color, lw=0.8, alpha=0.6)
 
         mean_curve = np.asarray(ppd.mean(axis=0))
         means.append(mean_curve)
+        
+        # Optional: Plot the mean or median line as well for clarity
+        #ax.plot(xgrid, mean_curve, color=color, lw=2.5)
 
+    # --- Formatting Logic ---
     if xlim is None:
         xlim = (xgrid.min(), xgrid.max())
     if ylim is None:
         mean_arr = np.vstack(means)
         ymin = max(1e-6, float(mean_arr.min()))
-        ymax = float(mean_arr.max()) * 1.2
+        ymax = float(mean_arr.max()) * 1.5 # Extra headroom for legend
         ylim = (ymin, ymax)
 
     ax.set_xlim(*xlim)
