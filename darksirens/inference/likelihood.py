@@ -5,11 +5,10 @@ import jax.numpy as jnp
 from functools import partial
 from jax.scipy.special import logsumexp
 
-from darksirens.gw.populations import pop_model_parser
+from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em.completeness import universe_model_parser
 from darksirens.utils.cosmology import z_of_dL, ddL_of_z
 from darksirens.utils.utils import logdiffexp
-
 
 from astropy.cosmology import Planck15
 
@@ -26,7 +25,7 @@ survey_params_fid = jnp.array([
 ])
 
 # ---------------------------------------------------------------------
-# Low-level JAX kernel (unchanged except for cleanup)
+# Low-level JAX kernel
 # ---------------------------------------------------------------------
 @partial(
     jax.jit,
@@ -75,7 +74,7 @@ def darksiren_log_likelihood(
     m2sels = m2detsels / (1 + zsels)
     qsels = m2sels / m1sels
 
-    log_det_weights = log_p_pop(m1sels, qsels, zsels, *pop_params)
+    log_det_weights = log_p_pop(m1sels, qsels, zsels, pop_params)
     log_det_weights += logPriorUniverse_safe(
         zsels, pixels_sel,
         H0, Om0, n0, z50, w, delta,
@@ -101,7 +100,7 @@ def darksiren_log_likelihood(
     m2 = m2det / (1 + z)
     q = m2 / m1
 
-    log_weights = log_p_pop(m1, q, z, *pop_params)
+    log_weights = log_p_pop(m1, q, z, pop_params)
     log_weights += logPriorUniverse_safe(
         z, pixels_pe,
         H0, Om0, n0, z50, w, delta,
@@ -118,17 +117,13 @@ def darksiren_log_likelihood(
 
 
 # ---------------------------------------------------------------------
-# High-level wrapper for samplers (Option A)
+# High-level wrapper for samplers
 # ---------------------------------------------------------------------
 def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     """
-    Returns a function likelihood(coord) that:
-      - slices the parameter vector
-      - applies fix_population logic
-      - calls darksiren_log_likelihood
+    Returns a function likelihood(coord) that applies fix_population logic
+    and robustly slices coordinates based on the true model parameters.
     """
-
-    # Unpack data once
     m1det = data["m1det"]
     m2det = data["m2det"]
     dL = data["dL"]
@@ -155,7 +150,10 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     pop_model = opts.pop_model
     universe_model = opts.universe_model
 
-    # Build the likelihood function used by samplers
+    # Get TRUE active parameters to cleanly slice the sampler coordinate
+    _, _, pop_labels, _ = pop_model_prior_parser(pop_model)
+    true_n_pop = len(pop_labels)
+
     def likelihood(coord):
         coord = jnp.asarray(coord)
         offset = 0
@@ -171,9 +169,8 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
         if opts.fix_population:
             pop_params = pop_params_fid
         else:
-            n_pop = len(pop_params_fid)
-            pop_params = coord[offset:offset+n_pop]
-            offset += n_pop
+            pop_params = coord[offset:offset+true_n_pop]
+            offset += true_n_pop
 
         # --- Survey ---
         if opts.fix_survey:
@@ -195,6 +192,5 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
             pop_model, universe_model,
             delta_g_pix_z
         )
-
 
     return likelihood
