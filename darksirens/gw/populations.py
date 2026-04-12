@@ -333,6 +333,69 @@ class MixtureModel:
 
         return out
 
+@dataclass
+class GlobalPairingMixtureModel:
+    mass_components: list[MassComponent]
+    pairing: PairingModel
+
+    @property
+    def n_weight_params(self):
+        return max(len(self.mass_components) - 1, 0)
+
+    @property
+    def param_specs(self):
+        specs = [
+            ParamSpec(rf"$f_{i+1}$", 0.0, 1.0)
+            for i in range(self.n_weight_params)
+        ]
+        for c in self.mass_components:
+            specs.extend(c.param_specs)
+        # Add the single shared pairing parameter(s) at the very end
+        specs.extend(self.pairing.param_specs)
+        return specs
+
+    @property
+    def n_params(self):
+        return self.n_weight_params + sum(c.n_params for c in self.mass_components) + self.pairing.n_params
+
+    def __call__(self, m1, q, theta):
+        n_w = self.n_weight_params
+        w_raw = theta[:n_w]
+        
+        # Extract pairing params from the end, flat mass params from the middle
+        n_p = self.pairing.n_params
+        tp = theta[-n_p:]
+        flat = theta[n_w : -n_p] if n_p > 0 else theta[n_w:]
+
+        if n_w > 0:
+            w_last = 1.0 - jnp.sum(w_raw)
+            w = jnp.concatenate([w_raw, jnp.atleast_1d(w_last)])
+        else:
+            w = jnp.array([1.0])
+
+        out = 0.0
+        off = 0
+        for wi, ci in zip(w, self.mass_components):
+            tm = flat[off:off + ci.n_params]
+
+            # Dynamically extract mmin and dmmin for the pairing filter
+            mmin = M_LO
+            dmmin = 0.01
+
+            if hasattr(ci, "m_min_spec"):
+                mmin_idx = ci.param_specs.index(ci.m_min_spec)
+                mmin = tm[mmin_idx]
+                
+            if hasattr(ci, "dm_min_spec"):
+                dmmin_idx = ci.param_specs.index(ci.dm_min_spec)
+                dmmin = tm[dmmin_idx]
+
+            # Multiply component mass evaluate by the global pairing evaluate
+            out = out + wi * ci(m1, tm) * self.pairing(m1, q, mmin, dmmin, tp)
+            off += ci.n_params
+
+        return out
+    
 
 # ======================================================================
 # 7. PopulationModel
@@ -458,216 +521,161 @@ def _joint(mass, pairing=None):
 # General K-mixtures built from components
 # ----------------------------------------------------------------------
 
-def _mixture_plpeak():
+def _mixture_plpeak(shared_beta=False):
     """2-component mixture: PowerLaw + Gaussian"""
     pl = _pl()
     g  = _gauss(20, 50)
 
-    components = [
+    if shared_beta:
+        return GlobalPairingMixtureModel(
+            mass_components=[pl, g],
+            pairing=_plpairing(beta_label=r"$\beta$")
+        )
+    return MixtureModel([
         _joint(pl, _plpairing(beta_label=r"$\beta_{\rm PL}$")),
         _joint(g,  _plpairing(beta_label=r"$\beta_{\rm G}$")),
-    ]
-    return MixtureModel(components)
+    ])
 
 
-def _mixture_bpl2peaks():
+def _mixture_bpl2peaks(shared_beta=False):
     """3-component mixture: BrokenPowerLaw + 2 Gaussians"""
     bpl = _bpl()
     g1  = _gauss(5, 20,  mu_label=r"$\mu_1$", sig_label=r"$\sigma_1$")
     g2  = _gauss(25, 40, mu_label=r"$\mu_2$", sig_label=r"$\sigma_2$")
 
-    components = [
+    if shared_beta:
+        return GlobalPairingMixtureModel(
+            mass_components=[bpl, g1, g2],
+            pairing=_plpairing(beta_label=r"$\beta$")
+        )
+    return MixtureModel([
         _joint(bpl, _plpairing(beta_label=r"$\beta_{\rm BPL}$")),
         _joint(g1,  _plpairing(beta_label=r"$\beta_{\rm G1}$")),
         _joint(g2,  _plpairing(beta_label=r"$\beta_{\rm G2}$")),
-    ]
-    return MixtureModel(components)
+    ])
 
 
-def _mixture_bpl3peaks():
+def _mixture_bpl3peaks(shared_beta=False):
     """4-component mixture: BrokenPowerLaw + 3 Gaussians"""
     bpl = _bpl()
     g1  = _gauss(5, 20,   mu_label=r"$\mu_1$", sig_label=r"$\sigma_1$")
     g2  = _gauss(25, 40,  mu_label=r"$\mu_2$", sig_label=r"$\sigma_2$")
     g3  = _gauss(50, 100, mu_label=r"$\mu_3$", sig_label=r"$\sigma_3$", sig_hi=20)
 
-    components = [
+    if shared_beta:
+        return GlobalPairingMixtureModel(
+            mass_components=[bpl, g1, g2, g3],
+            pairing=_plpairing(beta_label=r"$\beta$")
+        )
+    return MixtureModel([
         _joint(bpl, _plpairing(beta_label=r"$\beta_{\rm BPL}$")),
         _joint(g1,  _plpairing(beta_label=r"$\beta_{\rm G1}$")),
         _joint(g2,  _plpairing(beta_label=r"$\beta_{\rm G2}$")),
         _joint(g3,  _plpairing(beta_label=r"$\beta_{\rm G3}$")),
-    ]
-    return MixtureModel(components)
+    ])
 
 
-def _mixture_2pl1peak():
+def _mixture_2pl1peak(shared_beta=False):
     """3-component mixture: 2 PowerLaws + 1 Gaussian"""
-    pl1 = _pl(
-        alpha_label=r"$\alpha_1$",
-        mmin_label=r"$m_{\min,1}$",
-        mmax_label=r"$m_{\max,1}$",
-        dmmin_label=r"$dm_{\min,1}$",
-        dmmax_label=r"$dm_{\max,1}$",
-        alpha_lo=0, alpha_hi=6,
-        mmin_lo=2, mmin_hi=10,
-        mmax_lo=15, mmax_hi=50,
-    )
+    pl1 = _pl(alpha_label=r"$\alpha_1$", mmin_label=r"$m_{\min,1}$", mmax_label=r"$m_{\max,1}$", 
+              dmmin_label=r"$dm_{\min,1}$", dmmax_label=r"$dm_{\max,1}$", 
+              alpha_lo=0, alpha_hi=6, mmin_lo=2, mmin_hi=10, mmax_lo=15, mmax_hi=50)
+    pl2 = _pl(alpha_label=r"$\alpha_2$", mmin_label=r"$m_{\min,2}$", mmax_label=r"$m_{\max,2}$", 
+              dmmin_label=r"$dm_{\min,2}$", dmmax_label=r"$dm_{\max,2}$", 
+              alpha_lo=0, alpha_hi=6, mmin_lo=20, mmin_hi=40, mmax_lo=50, mmax_hi=100)
+    g   = _gauss(50, 100, sig_hi=20, mu_label=r"$\mu_3$", sig_label=r"$\sigma_3$")
 
-    pl2 = _pl(
-        alpha_label=r"$\alpha_2$",
-        mmin_label=r"$m_{\min,2}$",
-        mmax_label=r"$m_{\max,2}$",
-        dmmin_label=r"$dm_{\min,2}$",
-        dmmax_label=r"$dm_{\max,2}$",
-        alpha_lo=0, alpha_hi=6,
-        mmin_lo=20, mmin_hi=40,
-        mmax_lo=50, mmax_hi=100,
-    )
-
-    g = _gauss(
-        50, 100,
-        sig_hi=20,
-        mu_label=r"$\mu_3$",
-        sig_label=r"$\sigma_3$",
-    )
-
-    components = [
+    if shared_beta:
+        return GlobalPairingMixtureModel([pl1, pl2, g], _plpairing(beta_label=r"$\beta$"))
+    return MixtureModel([
         _joint(pl1, _plpairing(beta_label=r"$\beta_1$")),
         _joint(pl2, _plpairing(beta_label=r"$\beta_2$")),
         _joint(g,   _plpairing(beta_label=r"$\beta_3$")),
-    ]
-    return MixtureModel(components)
+    ])
 
-def _mixture_2pl2peaks():
+
+def _mixture_2pl2peaks(shared_beta=False):
     """4-component mixture: 2 PowerLaws + 2 Gaussians"""
-    pl1 = _pl(
-        alpha_label=r"$\alpha_1$",
-        mmin_label=r"$m_{\min,1}$", mmax_label=r"$m_{\max,1}$",
-        dmmin_label=r"$dm_{\min,1}$", dmmax_label=r"$dm_{\max,1}$",
-        alpha_lo=0, alpha_hi=6, 
-        mmin_lo=2, mmin_hi=10, 
-        mmax_lo=15, mmax_hi=50,
-    )
+    pl1 = _pl(alpha_label=r"$\alpha_1$", mmin_label=r"$m_{\min,1}$", mmax_label=r"$m_{\max,1}$", 
+              dmmin_label=r"$dm_{\min,1}$", dmmax_label=r"$dm_{\max,1}$", 
+              alpha_lo=0, alpha_hi=6, mmin_lo=2, mmin_hi=10, mmax_lo=15, mmax_hi=50)
+    pl2 = _pl(alpha_label=r"$\alpha_2$", mmin_label=r"$m_{\min,2}$", mmax_label=r"$m_{\max,2}$", 
+              dmmin_label=r"$dm_{\min,2}$", dmmax_label=r"$dm_{\max,2}$", 
+              alpha_lo=0, alpha_hi=6, mmin_lo=20, mmin_hi=40, mmax_lo=50, mmax_hi=100)
+    g1  = _gauss(5, 20, sig_hi=10, mu_label=r"$\mu_3$", sig_label=r"$\sigma_3$")
+    g2  = _gauss(20, 50, sig_hi=15, mu_label=r"$\mu_4$", sig_label=r"$\sigma_4$")
 
-    pl2 = _pl(
-        alpha_label=r"$\alpha_2$",
-        mmin_label=r"$m_{\min,2}$", mmax_label=r"$m_{\max,2}$",
-        dmmin_label=r"$dm_{\min,2}$", dmmax_label=r"$dm_{\max,2}$",
-        alpha_lo=0, alpha_hi=6, 
-        mmin_lo=20, mmin_hi=40, 
-        mmax_lo=50, mmax_hi=100,
-    )
-
-    g1 = _gauss(
-        5, 20, 
-        sig_hi=10,
-        mu_label=r"$\mu_3$", sig_label=r"$\sigma_3$",
-    )
-
-    g2 = _gauss(
-        20, 50, 
-        sig_hi=15,
-        mu_label=r"$\mu_4$", sig_label=r"$\sigma_4$",
-    )
-
-    components = [
+    if shared_beta:
+        return GlobalPairingMixtureModel([pl1, pl2, g1, g2], _plpairing(beta_label=r"$\beta$"))
+    return MixtureModel([
         _joint(pl1, _plpairing(beta_label=r"$\beta_1$")),
         _joint(pl2, _plpairing(beta_label=r"$\beta_2$")),
         _joint(g1,  _plpairing(beta_label=r"$\beta_3$")),
         _joint(g2,  _plpairing(beta_label=r"$\beta_4$")),
-    ]
-    return MixtureModel(components)
+    ])
 
 
-def _mixture_2pl3peaks():
+def _mixture_2pl3peaks(shared_beta=False):
     """5-component mixture: 2 PowerLaws + 3 Gaussians"""
-    pl1 = _pl(
-        alpha_label=r"$\alpha_1$",
-        mmin_label=r"$m_{\min,1}$", mmax_label=r"$m_{\max,1}$",
-        dmmin_label=r"$dm_{\min,1}$", dmmax_label=r"$dm_{\max,1}$",
-        alpha_lo=0, alpha_hi=6, 
-        mmin_lo=2, mmin_hi=10, 
-        mmax_lo=15, mmax_hi=50,
-    )
+    pl1 = _pl(alpha_label=r"$\alpha_1$", mmin_label=r"$m_{\min,1}$", mmax_label=r"$m_{\max,1}$", 
+              dmmin_label=r"$dm_{\min,1}$", dmmax_label=r"$dm_{\max,1}$", 
+              alpha_lo=0, alpha_hi=6, mmin_lo=2, mmin_hi=10, mmax_lo=15, mmax_hi=50)
+    pl2 = _pl(alpha_label=r"$\alpha_2$", mmin_label=r"$m_{\min,2}$", mmax_label=r"$m_{\max,2}$", 
+              dmmin_label=r"$dm_{\min,2}$", dmmax_label=r"$dm_{\max,2}$", 
+              alpha_lo=0, alpha_hi=6, mmin_lo=20, mmin_hi=40, mmax_lo=50, mmax_hi=100)
+    g1  = _gauss(5, 20, sig_hi=10, mu_label=r"$\mu_3$", sig_label=r"$\sigma_3$")
+    g2  = _gauss(20, 50, sig_hi=10, mu_label=r"$\mu_4$", sig_label=r"$\sigma_4$")
+    g3  = _gauss(50, 100, sig_hi=20, mu_label=r"$\mu_5$", sig_label=r"$\sigma_5$")
 
-    pl2 = _pl(
-        alpha_label=r"$\alpha_2$",
-        mmin_label=r"$m_{\min,2}$", mmax_label=r"$m_{\max,2}$",
-        dmmin_label=r"$dm_{\min,2}$", dmmax_label=r"$dm_{\max,2}$",
-        alpha_lo=0, alpha_hi=6, 
-        mmin_lo=20, mmin_hi=40, 
-        mmax_lo=50, mmax_hi=100,
-    )
-
-    g1 = _gauss(
-        5, 20, 
-        sig_hi=10,
-        mu_label=r"$\mu_3$", sig_label=r"$\sigma_3$",
-    )
-
-    g2 = _gauss(
-        20, 50, 
-        sig_hi=10,
-        mu_label=r"$\mu_4$", sig_label=r"$\sigma_4$",
-    )
-
-    g3 = _gauss(
-        50, 100, 
-        sig_hi=20,
-        mu_label=r"$\mu_5$", sig_label=r"$\sigma_5$",
-    )
-
-    components = [
+    if shared_beta:
+        return GlobalPairingMixtureModel([pl1, pl2, g1, g2, g3], _plpairing(beta_label=r"$\beta$"))
+    return MixtureModel([
         _joint(pl1, _plpairing(beta_label=r"$\beta_1$")),
         _joint(pl2, _plpairing(beta_label=r"$\beta_2$")),
         _joint(g1,  _plpairing(beta_label=r"$\beta_3$")),
         _joint(g2,  _plpairing(beta_label=r"$\beta_4$")),
         _joint(g3,  _plpairing(beta_label=r"$\beta_5$")),
-    ]
-    return MixtureModel(components)
+    ])
 
 
 # ----------------------------------------------------------------------
 # Registry and Parsers
 # ----------------------------------------------------------------------
 
-def _make(mix_fn):
+def _make(mix_fn, shared_beta=False):
     """Wraps a mixture-generator into a full PopulationModel."""
-    return PopulationModel(mixture=mix_fn())
+    return PopulationModel(mixture=mix_fn(shared_beta=shared_beta))
 
 
-# Define standard models
-_BASE_MODELS = {
-    "powerlaw+peak":           _make(_mixture_plpeak),
-    "brokenpowerlaw+2peaks":   _make(_mixture_bpl2peaks),
-    "brokenpowerlaw+3peaks":   _make(_mixture_bpl3peaks),
-    "twopowerlaws+peak":       _make(_mixture_2pl1peak),
-    "twopowerlaws+2peaks":     _make(_mixture_2pl2peaks),
-    "twopowerlaws+3peaks":     _make(_mixture_2pl3peaks),
+_RAW_MODELS = {
+    "powerlaw+peak":           (_mixture_plpeak,    "PL+G"),
+    "brokenpowerlaw+2peaks":   (_mixture_bpl2peaks, "BPL+2G"),
+    "brokenpowerlaw+3peaks":   (_mixture_bpl3peaks, "BPL+3G"),
+    "twopowerlaws+peak":       (_mixture_2pl1peak,  "2PL+G"),
+    "twopowerlaws+2peaks":     (_mixture_2pl2peaks, "2PL+2G"),
+    "twopowerlaws+3peaks":     (_mixture_2pl3peaks, "2PL+3G"),
 }
 
-# Construct the full registry (including symmetric variants)
+# Construct the full registry (independent betas, shared betas)
 _MODEL_REGISTRY: dict[str, PopulationModel] = {}
-for name, model in _BASE_MODELS.items():
-    _MODEL_REGISTRY[name] = model
-    _MODEL_REGISTRY[f"symmetric_{name}"] = model
+MODEL_NAME_LATEX: dict[str, str] = {"mock_data": r"\text{Mock}"}
 
-# LaTeX labels for plots/diagnostics
-MODEL_NAME_LATEX: dict[str, str] = {
-    "powerlaw+peak":                   "PL+G",
-    "brokenpowerlaw+2peaks":           "BPL+2G",
-    "brokenpowerlaw+3peaks":           "BPL+3G",
-    "twopowerlaws+peak":               "2PL+G",
-    "twopowerlaws+2peaks":             "2PL+2G",
-    "twopowerlaws+3peaks":             "2PL+3G",
-    "symmetric_powerlaw+peak":         "Sym PL+G",
-    "symmetric_brokenpowerlaw+2peaks": "Sym BPL+2G",
-    "symmetric_brokenpowerlaw+3peaks": "Sym BPL+3G",
-    "symmetric_twopowerlaws+peak":     "Sym 2PL+G",
-    "symmetric_twopowerlaws+2peaks":   "Sym 2PL+2G",
-    "symmetric_twopowerlaws+3peaks":   "Sym 2PL+3G",
-    "mock_data":                       r"\text{Mock}",
-}
+for name, (mix_fn, latex_name) in _RAW_MODELS.items():
+    # Helper functions prevent late-binding closure bugs in the loop
+    def bind_fn(f=mix_fn, shared=False):
+        return lambda: _make(f, shared_beta=shared)
+
+    # 1. Independent Betas
+    model_indep = bind_fn(shared=False)()
+    _MODEL_REGISTRY[name] = model_indep
+    MODEL_NAME_LATEX[name] = latex_name
+
+    # 2. Shared Beta
+    name_shared = f"{name}_shared_beta"
+    model_shared = bind_fn(shared=True)()
+    _MODEL_REGISTRY[name_shared] = model_shared
+    MODEL_NAME_LATEX[name_shared] = f"{latex_name} (Shared $\\beta$)"
+    
 
 def get_model(pop_model: str) -> PopulationModel:
     """Retrieves the PopulationModel instance by name."""
