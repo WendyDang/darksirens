@@ -21,8 +21,7 @@ jax.config.update('jax_default_matmul_precision', 'highest')
 
 from darksirens.utils.interp2d import interp2d, CartesianGrid
 
-zMax_1 = 0.5
-zMax_2 = 5
+zMax = 5
 
 H0Planck = Planck15.H0.value
 Om0Planck = Planck15.Om0
@@ -30,9 +29,7 @@ Om0Planck = Planck15.Om0
 cosmo = FlatLambdaCDM(H0=H0Planck,Om0=Planck15.Om0)
 speed_of_light = constants.c.to('km/s').value
 
-zgrid_1 = np.expm1(np.linspace(np.log(1), np.log(zMax_1+1), 5000))
-zgrid_2 = np.expm1(np.linspace(np.log(zMax_1+1), np.log(zMax_2+1), 5000))
-zgrid = np.concatenate([zgrid_1,zgrid_2])
+zgrid = np.expm1(np.linspace(np.log(1), np.log(zMax+1), 1000))
 
 rs = []
 Om0grid = jnp.linspace(Om0Planck-0.1,Om0Planck+0.1,200)

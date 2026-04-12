@@ -19,7 +19,8 @@ from darksirens.utils.cosmology import dV_of_z
 # ------------------------------------------------------------
 # Global redshift grid
 # ------------------------------------------------------------
-zgrid = jnp.linspace(0.0, 5.0, 1024)
+zMax = 5.0
+zgrid = jnp.expm1(jnp.linspace(jnp.log(1), jnp.log(zMax+1), 1000))
 
 # ------------------------------------------------------------
 # Galaxy counts
@@ -199,9 +200,9 @@ def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
 
 
 @partial(jit, static_argnames=['apix'])
-def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
-                                    delta, apix, zgals, dzgals, wgals,
-                                    delta_g_pix_z, b_miss, alpha):
+def logPriorUniverse_spectralsirens_from_dark(z, pix, H0, Om0, n0, z50, w,
+                                              delta, apix, zgals, dzgals, wgals,
+                                              delta_g_pix_z, b_miss, alpha):
     """
     Same structure, but with f=0 (no catalog term in the mixture).
     """
@@ -230,9 +231,9 @@ def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
 
 
 @partial(jit, static_argnames=['apix'])
-def logPriorUniverse_spectralsirens_fast(z, pix, H0, Om0, n0, z50, w,
-                                         delta, apix, zgals, dzgals, wgals,
-                                         delta_g_pix_z, b_miss, alpha):
+def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
+                                    delta, apix, zgals, dzgals, wgals,
+                                    delta_g_pix_z, b_miss, alpha):
     """
     Pure volume + evolution prior (no catalog, no completeness).
     """
@@ -247,8 +248,8 @@ def universe_model_parser(universe_model='dark_sirens'):
         logp = logPriorUniverse
     elif universe_model == 'spectral_sirens':
         logp = logPriorUniverse_spectralsirens
-    elif universe_model == 'spectral_sirens_fast':
-        logp = logPriorUniverse_spectralsirens_fast
+    elif universe_model == 'spectral_sirens_from_dark':
+        logp = logPriorUniverse_spectralsirens_from_dark
     else:
         raise ValueError(f"Unknown universe_model: {universe_model}")
     return logp

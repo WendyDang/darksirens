@@ -9,58 +9,52 @@ from darksirens.em.utils import load_survey
 
 def load_all_data(opts):
     """
-    Loads all survey, GW posterior, and selection data.
-    Returns a dictionary ready to be passed into make_likelihood().
+    Loads survey, GW posterior, and selection data. 
+    Handles cases where survey_path might be None (non-dark sirens models).
     """
 
-    # --------------------------------------------------------
-    # Survey data
-    # --------------------------------------------------------
-    nside, ngals, zgals, dzgals, wgals = load_survey(opts.survey_path)
+    # 1. Initialize survey variables as None/defaults
+    nside = None
+    zgals = dzgals = wgals = None
+    zgals_pe = dzgals_pe = wgals_pe = None
+    zgals_sel = dzgals_sel = wgals_sel = None
+    apix = 0.0
 
-    # --------------------------------------------------------
-    # GW posterior samples
-    # --------------------------------------------------------
+    # 2. Load Survey only if path is provided
+    if opts.survey_path is not None:
+        nside, ngals, zgals, dzgals, wgals = load_survey(opts.survey_path)
+        apix = hp.nside2pixarea(nside)
+    else:
+        # If no survey, we might still need a default nside for 
+        # pixelization logic in other parts of the code
+        nside = 1 
+
+    # 3. Load GW posterior samples (Always required)
     m1det, m2det, dL, ra, dec, p_pe, nEvents = load_gw_samples(
         opts.gw_path, nsamp=opts.nsamp
     )
 
-    # --------------------------------------------------------
-    # Selection samples
-    # --------------------------------------------------------
+    # 4. Load Selection samples (Always required)
     (
-        m1detsels,
-        m2detsels,
-        dLsels,
-        rasels,
-        decsels,
-        p_draw,
-        Ndraw,
+        m1detsels, m2detsels, dLsels,
+        rasels, decsels, p_draw, Ndraw,
     ) = load_selection_samples(opts.gwselection_path)
 
-    # --------------------------------------------------------
-    # Pixel indexing
-    # --------------------------------------------------------
-    npix = hp.nside2npix(nside)
-    apix = hp.nside2pixarea(nside)
-
+    # 5. Pixel indexing and Galaxy lookups
+    # Only perform these if a survey was actually loaded
     pixels_pe = hp.ang2pix(nside, jnp.pi/2 - dec, ra)
     pixels_sel = hp.ang2pix(nside, jnp.pi/2 - decsels, rasels)
 
-    # --------------------------------------------------------
-    # Galaxy redshift arrays for PE and selection samples
-    # --------------------------------------------------------
-    zgals_pe = zgals[pixels_pe]
-    dzgals_pe = dzgals[pixels_pe]
-    wgals_pe = wgals[pixels_pe]
+    if zgals is not None:
+        zgals_pe = zgals[pixels_pe]
+        dzgals_pe = dzgals[pixels_pe]
+        wgals_pe = wgals[pixels_pe]
 
-    zgals_sel = zgals[pixels_sel]
-    dzgals_sel = dzgals[pixels_sel]
-    wgals_sel = wgals[pixels_sel]
+        zgals_sel = zgals[pixels_sel]
+        dzgals_sel = dzgals[pixels_sel]
+        wgals_sel = wgals[pixels_sel]
 
-    # --------------------------------------------------------
-    # Pack everything into a dictionary
-    # --------------------------------------------------------
+    # 6. Pack into dictionary
     data = dict(
         # GW PE samples
         m1det=m1det,

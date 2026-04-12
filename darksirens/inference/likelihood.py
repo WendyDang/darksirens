@@ -1,5 +1,3 @@
-# darksirens/inference/likelihood.py
-
 import jax
 import jax.numpy as jnp
 from functools import partial
@@ -12,21 +10,11 @@ from darksirens.utils.utils import logdiffexp
 
 from astropy.cosmology import Planck15
 
-H0_fid = float(Planck15.H0.value)        # km/s/Mpc
-Om0_fid = float(Planck15.Om0)            # dimensionless
+H0_fid = float(Planck15.H0.value)
+Om0_fid = float(Planck15.Om0)
 
-survey_params_fid = jnp.array([
-    -2.0,   # log10n0
-     1.0,   # z50
-     0.5,   # w
-     0.0,   # delta
-     1.0,   # b_miss
-     0.5,   # alpha
-])
+survey_params_fid = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
 
-# ---------------------------------------------------------------------
-# Low-level JAX kernel
-# ---------------------------------------------------------------------
 @partial(
     jax.jit,
     static_argnames=[
@@ -61,14 +49,11 @@ def darksiren_log_likelihood(
         )
         return jnp.where(jnp.isfinite(lp), lp, -1e6)
 
-    # Unpack parameters
     H0, Om0 = cosmo_params
     log10n0, z50, w, delta, b_miss, alpha = survey_params
     n0 = 10.0**log10n0
 
-    # --------------------------------------------------------
-    # Selection term μ
-    # --------------------------------------------------------
+    # --- Selection term μ ---
     zsels = z_of_dL(dLsels, H0, Om0)
     m1sels = m1detsels / (1 + zsels)
     m2sels = m2detsels / (1 + zsels)
@@ -89,12 +74,10 @@ def darksiren_log_likelihood(
     log_sigma2 = logdiffexp(log_s2, 2*log_mu - jnp.log(Ndraw))
     Neff = jnp.exp(2*log_mu - log_sigma2)
 
-    ll = jnp.where((Neff <= 5 * nEvents), -jnp.inf, 0)
+    ll = jnp.where((Neff <= 5 * nEvents), -jnp.inf, 0.0)
     ll += -nEvents*log_mu + nEvents*(3+nEvents)/(2*Neff)
 
-    # --------------------------------------------------------
-    # Event term
-    # --------------------------------------------------------
+    # --- Event term ---
     z = z_of_dL(dL, H0, Om0)
     m1 = m1det / (1 + z)
     m2 = m2det / (1 + z)
@@ -116,41 +99,35 @@ def darksiren_log_likelihood(
     return jnp.nan_to_num(ll, nan=-jnp.inf)
 
 
-# ---------------------------------------------------------------------
-# High-level wrapper for samplers
-# ---------------------------------------------------------------------
 def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     """
-    Returns a function likelihood(coord) that applies fix_population logic
-    and robustly slices coordinates based on the true model parameters.
+    Enhanced wrapper that converts None values into dummy JAX arrays 
+    to ensure compatibility with JIT.
     """
-    m1det = data["m1det"]
-    m2det = data["m2det"]
-    dL = data["dL"]
-    p_pe = data["p_pe"]
-    pixels_pe = data["pixels_pe"]
-    zgals_pe = data["zgals_pe"]
-    dzgals_pe = data["dzgals_pe"]
-    wgals_pe = data["wgals_pe"]
+    
+    # Helper to convert None to dummy array for JAX JIT compatibility
+    def to_jax(key):
+        val = data.get(key)
+        return jnp.asarray(val) if val is not None else jnp.array([0.0])
 
-    m1detsels = data["m1detsels"]
-    m2detsels = data["m2detsels"]
-    dLsels = data["dLsels"]
-    p_draw = data["p_draw"]
-    pixels_sel = data["pixels_sel"]
-    zgals_sel = data["zgals_sel"]
-    dzgals_sel = data["dzgals_sel"]
-    wgals_sel = data["wgals_sel"]
+    # Unpack always-required data
+    m1det, m2det, dL = data["m1det"], data["m2det"], data["dL"]
+    p_pe, pixels_pe = data["p_pe"], data["pixels_pe"]
+    m1detsels, m2detsels, dLsels = data["m1detsels"], data["m2detsels"], data["dLsels"]
+    p_draw, pixels_sel = data["p_draw"], data["pixels_sel"]
+    
+    nEvents, nsamp, Ndraw, apix = data["nEvents"], opts.nsamp, data["Ndraw"], data["apix"]
+    pop_model, universe_model = opts.pop_model, opts.universe_model
 
-    nEvents = data["nEvents"]
-    nsamp = opts.nsamp
-    Ndraw = data["Ndraw"]
-    apix = data["apix"]
+    # Convert survey-optional data to JAX arrays (even if empty/dummy)
+    zgals_pe = to_jax("zgals_pe")
+    dzgals_pe = to_jax("dzgals_pe")
+    wgals_pe = to_jax("wgals_pe")
+    zgals_sel = to_jax("zgals_sel")
+    dzgals_sel = to_jax("dzgals_sel")
+    wgals_sel = to_jax("wgals_sel")
 
-    pop_model = opts.pop_model
-    universe_model = opts.universe_model
-
-    # Get TRUE active parameters to cleanly slice the sampler coordinate
+    # Get active parameter counts
     _, _, pop_labels, _ = pop_model_prior_parser(pop_model)
     true_n_pop = len(pop_labels)
 
@@ -158,21 +135,18 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
         coord = jnp.asarray(coord)
         offset = 0
 
-        # --- Cosmology ---
         if opts.fix_cosmology:
             H0, Om0 = H0_fid, Om0_fid
         else:
             H0, Om0 = coord[offset:offset+2]
             offset += 2
 
-        # --- Population ---
         if opts.fix_population:
             pop_params = pop_params_fid
         else:
             pop_params = coord[offset:offset+true_n_pop]
             offset += true_n_pop
 
-        # --- Survey ---
         if opts.fix_survey:
             survey_params = survey_params_fid
         else:
