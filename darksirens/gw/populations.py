@@ -638,6 +638,37 @@ def _mixture_2pl3peaks(shared_beta=False):
     ])
 
 
+def _mixture_bpl2peaks1pl(shared_beta=False):
+    """4-component mixture: BrokenPowerLaw + 2 Gaussians + 1 PowerLaw"""
+    bpl = _bpl()
+    g1  = _gauss(5, 20,   mu_label=r"$\mu_1$", sig_label=r"$\sigma_1$")
+    g2  = _gauss(25, 40,  mu_label=r"$\mu_2$", sig_label=r"$\sigma_2$")
+    
+    # Power-law component targeted at the 50-100 range
+    pl = _pl(
+        alpha_label=r"$\alpha_{\rm PL}$", 
+        mmin_label=r"$m_{\min,\rm PL}$", 
+        mmax_label=r"$m_{\max,\rm PL}$", 
+        dmmin_label=r"$dm_{\min,\rm PL}$", 
+        dmmax_label=r"$dm_{\max,\rm PL}$", 
+        alpha_lo=0, alpha_hi=6, 
+        mmin_lo=40, mmin_hi=60,  # Starts around 50
+        mmax_lo=80, mmax_hi=120  # Ends around 100
+    )
+
+    if shared_beta:
+        return GlobalPairingMixtureModel(
+            mass_components=[bpl, g1, g2, pl],
+            pairing=_plpairing(beta_label=r"$\beta$")
+        )
+    return MixtureModel([
+        _joint(bpl, _plpairing(beta_label=r"$\beta_{\rm BPL}$")),
+        _joint(g1,  _plpairing(beta_label=r"$\beta_{\rm G1}$")),
+        _joint(g2,  _plpairing(beta_label=r"$\beta_{\rm G2}$")),
+        _joint(pl,  _plpairing(beta_label=r"$\beta_{\rm PL}$")),
+    ])
+
+
 # ----------------------------------------------------------------------
 # Registry and Parsers
 # ----------------------------------------------------------------------
@@ -648,12 +679,13 @@ def _make(mix_fn, shared_beta=False):
 
 
 _RAW_MODELS = {
-    "powerlaw+peak":           (_mixture_plpeak,    "PL+G"),
-    "brokenpowerlaw+2peaks":   (_mixture_bpl2peaks, "BPL+2G"),
-    "brokenpowerlaw+3peaks":   (_mixture_bpl3peaks, "BPL+3G"),
-    "twopowerlaws+peak":       (_mixture_2pl1peak,  "2PL+G"),
-    "twopowerlaws+2peaks":     (_mixture_2pl2peaks, "2PL+2G"),
-    "twopowerlaws+3peaks":     (_mixture_2pl3peaks, "2PL+3G"),
+    "powerlaw+peak":                   (_mixture_plpeak,        "PL+G"),
+    "brokenpowerlaw+2peaks":           (_mixture_bpl2peaks,     "BPL+2G"),
+    "brokenpowerlaw+3peaks":           (_mixture_bpl3peaks,     "BPL+3G"),
+    "brokenpowerlaw+2peaks+powerlaw":  (_mixture_bpl2peaks1pl,  "BPL+2G+PL"),
+    "twopowerlaws+peak":               (_mixture_2pl1peak,      "2PL+G"),
+    "twopowerlaws+2peaks":             (_mixture_2pl2peaks,     "2PL+2G"),
+    "twopowerlaws+3peaks":             (_mixture_2pl3peaks,     "2PL+3G"),
 }
 
 # Construct the full registry (independent betas, shared betas)

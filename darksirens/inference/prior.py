@@ -173,6 +173,44 @@ def get_fixed_population_params(pop_model):
             3.0                             # gamma (Global redshift evolution)
         ])
 
+    # ---------------------------------------------------------
+    # BPL + 2 Peaks + 1 PL
+    # ---------------------------------------------------------
+    elif pop_model in ["brokenpowerlaw+2peaks+powerlaw"]:
+        return jnp.array([
+            0.10, 0.05, 0.05, # f1, f2, f3 (3 fractions for 4 components)
+            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass (BPL)
+            5.0, 3.0,         # m_min, dm_min (BPL)
+            80.0, 10.0,       # m_max, dm_max (BPL)
+            1.0,              # beta_BPL
+            10.0, 3.0, 1.0,   # mu1, sigma1, beta_G1
+            35.0, 5.0, 1.0,   # mu2, sigma2, beta_G2
+            3.0,              # alpha_PL
+            50.0,             # m_min_PL
+            100.0,            # m_max_PL
+            3.0,              # dm_min_PL
+            10.0,             # dm_max_PL
+            1.0,              # beta_PL
+            3.0               # gamma
+        ])
+
+    elif pop_model in ["brokenpowerlaw+2peaks+powerlaw_shared_beta"]:
+        return jnp.array([
+            0.10, 0.05, 0.05, # f1, f2, f3
+            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass (BPL)
+            5.0, 3.0,         # m_min, dm_min (BPL)
+            80.0, 10.0,       # m_max, dm_max (BPL)
+            10.0, 3.0,        # mu1, sigma1
+            35.0, 5.0,        # mu2, sigma2
+            3.0,              # alpha_PL
+            50.0,             # m_min_PL
+            100.0,            # m_max_PL
+            3.0,              # dm_min_PL
+            10.0,             # dm_max_PL
+            1.0,              # beta (Shared)
+            3.0               # gamma
+        ])
+
     else:
         raise ValueError(f"No fixed parameters defined for model '{pop_model}'")
 
