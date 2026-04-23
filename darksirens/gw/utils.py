@@ -28,6 +28,11 @@ import glob
 
 from darksirens.utils.cosmology import *
 
+from gwdistributions.distributions.spin import IsotropicUniformMagnitudeChiEffGivenComponentMass
+
+spin_prior = IsotropicUniformMagnitudeChiEffGivenComponentMass()
+spin_prior._init_values(max_spin_magnitude=0.99)
+
 def load_gw_samples(gw_path, nsamp=64):
     """
     Load GW posterior samples from an HDF5 file and return flattened arrays
@@ -42,7 +47,7 @@ def load_gw_samples(gw_path, nsamp=64):
 
     Returns
     -------
-    m1det, m2det, dL, ra, dec, p_pe : jnp.ndarray
+    m1det, m2det, dL, chieff, ra, dec, p_pe : jnp.ndarray
         Flattened arrays of length (nEvents * nsamp).
     nEvents : int
         Number of GW events.
@@ -59,6 +64,7 @@ def load_gw_samples(gw_path, nsamp=64):
         m2det  = np.array(f["m2det"])
         dL     = np.array(f["dL"]) * u.Mpc
         dL     = dL.value  # convert to float Mpc
+        chieff = np.array(f["chieff"])
 
         # Optional PE weights
         p_pe = np.array(f["p_pe"]) if "p_pe" in f else None
@@ -66,11 +72,12 @@ def load_gw_samples(gw_path, nsamp=64):
     # ------------------------------------------------------------
     # Reshape to (nEvents, nsamps_file)
     # ------------------------------------------------------------
-    ra    = ra.reshape(nEvents, nsamps_file)
-    dec   = dec.reshape(nEvents, nsamps_file)
-    m1det = m1det.reshape(nEvents, nsamps_file)
-    m2det = m2det.reshape(nEvents, nsamps_file)
-    dL    = dL.reshape(nEvents, nsamps_file)
+    ra     = ra.reshape(nEvents, nsamps_file)
+    dec    = dec.reshape(nEvents, nsamps_file)
+    m1det  = m1det.reshape(nEvents, nsamps_file)
+    m2det  = m2det.reshape(nEvents, nsamps_file)
+    dL     = dL.reshape(nEvents, nsamps_file)
+    chieff = chieff.reshape(nEvents, nsamps_file)
 
     # ------------------------------------------------------------
     # Truncate to requested nsamp
@@ -80,21 +87,31 @@ def load_gw_samples(gw_path, nsamp=64):
             f"Requested nsamp={nsamp}, but file only contains nsamp={nsamps_file}"
         )
 
-    ra    = ra[:, :nsamp]
-    dec   = dec[:, :nsamp]
-    m1det = m1det[:, :nsamp]
-    m2det = m2det[:, :nsamp]
-    dL    = dL[:, :nsamp]
+    ra     = ra[:, :nsamp]
+    dec    = dec[:, :nsamp]
+    m1det  = m1det[:, :nsamp]
+    m2det  = m2det[:, :nsamp]
+    dL     = dL[:, :nsamp]
+    chieff = chieff[:, :nsamp]
 
     # ------------------------------------------------------------
     # Flatten to (nEvents * nsamp,)
     # ------------------------------------------------------------
-    ra    = ra.flatten()
-    dec   = dec.flatten()
-    m1det = m1det.flatten()
-    m2det = m2det.flatten()
-    dL    = dL.flatten()
+    ra     = ra.flatten()
+    dec    = dec.flatten()
+    m1det  = m1det.flatten()
+    m2det  = m2det.flatten()
+    dL     = dL.flatten()
+    chieff = chieff.flatten()
+    
+    # Define cosmology to prevent NameError
+    H0Planck = Planck15.H0.value
+    Om0Planck = Planck15.Om0
 
+    redshift = z_of_dL(dL, H0Planck, Om0Planck)
+    m1source = m1det/(1+redshift)
+    m2source = m2det/(1+redshift)
+    
     # ------------------------------------------------------------
     # p_pe handling
     # ------------------------------------------------------------
@@ -102,12 +119,18 @@ def load_gw_samples(gw_path, nsamp=64):
         p_pe = dL**2
     else:
         p_pe = np.array(p_pe).reshape(nEvents, nsamps_file)[:, :nsamp].flatten()
-
-    # Convert to jnp
+    
+    p_pe_chieff = np.exp(spin_prior._logprob(chieff,m1source,m2source,0.99))
+    p_pe = p_pe * p_pe_chieff
+    p_pe = p_pe/np.sum(p_pe)
+    print(p_pe.sum())
+    
+    # Convert to jnp in requested order: m1det, m2det, dL, chieff, ra, ...
     return (
         jnp.array(m1det),
         jnp.array(m2det),
         jnp.array(dL),
+        jnp.array(chieff),
         jnp.array(ra),
         jnp.array(dec),
         jnp.array(p_pe),
@@ -121,7 +144,7 @@ def load_selection_samples(
     rng=None,
 ):
     """
-    Return (m1det, m2det, dL, ra, dec, pdraw, ndraw) for detected injections.
+    Return (m1det, m2det, dL, chieff, ra, dec, pdraw, ndraw) for detected injections.
 
     - ndraw is the total number of generated injections (accepted + rejected).
     - If nsamp is not None, a subsample of detected injections is drawn with
@@ -144,6 +167,7 @@ def load_selection_samples(
     m1detsels : jnp.ndarray
     m2detsels : jnp.ndarray
     dLsels    : jnp.ndarray
+    chieffsels: jnp.ndarray
     rasels    : jnp.ndarray
     decsels   : jnp.ndarray
     pdraw_sel : jnp.ndarray
@@ -157,30 +181,40 @@ def load_selection_samples(
         # Branch 1: "injections/..." format
         # ------------------------------------------------------------
         if "injections" in f:
-            m1det_all = np.array(f["injections"]["mass1"][:])
-            m2det_all = np.array(f["injections"]["mass2"][:])
-            dL_all    = np.array(f["injections"]["distance"][:])
-            ra_all    = np.array(f["injections"]["right_ascension"][:])
-            dec_all   = np.array(f["injections"]["declination"][:])
-
+            m1det_all  = np.array(f["injections"]["mass1"][:])
+            m2det_all  = np.array(f["injections"]["mass2"][:])
+            dL_all     = np.array(f["injections"]["distance"][:])
+            ra_all     = np.array(f["injections"]["right_ascension"][:])
+            dec_all    = np.array(f["injections"]["declination"][:])
+            s1z_all    = np.array(f["injections"]["spin1z"][:])
+            s2z_all    = np.array(f["injections"]["spin2z"][:])
+            
             # Cosmology for reference distribution
             H0Planck = Planck15.H0.value
             Om0Planck = Planck15.Om0
 
             z_all = z_of_dL(dL_all, H0Planck, Om0Planck)
 
-            # Reference sampling PDF in (m1_source, m2_source, z)
             m1src_all = m1det_all / (1.0 + z_all)
             m2src_all = m2det_all / (1.0 + z_all)
+            chieff_all = (m1src_all*s1z_all + m2src_all*s2z_all)/(m1src_all + m2src_all)        
+            
+            # Safely calculate 1D chi_eff draw probability (preventing -inf underflow)
+            log_p_chi = spin_prior._logprob(chieff_all, m1src_all, m2src_all, 0.99)
+            safe_log_p_chi = np.clip(log_p_chi, a_min=-50.0, a_max=None)
+            p_chieff_draw = np.exp(safe_log_p_chi)
 
-            p_m1m2 = np.array(
-                f["injections"]["mass1_source_mass2_source_sampling_pdf"][:]
-            )
-            p_z = np.array(f["injections"]["redshift_sampling_pdf"][:])
+            # Load the joint PDF and the exact 3D spin PDFs
+            p_joint = np.array(f["injections"]["sampling_pdf"][:])
+            p_spin1 = np.array(f["injections"]["spin1x_spin1y_spin1z_sampling_pdf"][:])
+            p_spin2 = np.array(f["injections"]["spin2x_spin2y_spin2z_sampling_pdf"][:])
+            
+            # Remove the 6D spin probability and replace it with the 1D chi_eff probability
+            p_effective = (p_joint / (p_spin1 * p_spin2)) * p_chieff_draw
 
-            # pdraw in detector-frame variables (Farr 2019 style)
+            # Convert to detector-frame variables
             pdraw_all = (
-                p_m1m2 * p_z
+                p_effective
                 / (1.0 + z_all) ** 2
                 / ddL_of_z(z_all, dL_all, H0Planck, Om0Planck)
             )
@@ -214,7 +248,17 @@ def load_selection_samples(
             dL_all    = np.array(f["events"]["luminosity_distance"][:])
             ra_all    = np.array(f["events"]["right_ascension"][:])
             dec_all   = np.array(f["events"]["declination"][:])
-
+            
+            # Extract all spin components needed for the 6D analytical prior
+            s1x_all   = np.array(f["events"]["spin1x"][:])
+            s1y_all   = np.array(f["events"]["spin1y"][:])
+            s1z_all   = np.array(f["events"]["spin1z"][:])
+            s2x_all   = np.array(f["events"]["spin2x"][:])
+            s2y_all   = np.array(f["events"]["spin2y"][:])
+            s2z_all   = np.array(f["events"]["spin2z"][:])
+            
+            chieff_all = (m1src_all*s1z_all + m2src_all*s2z_all)/(m1src_all + m2src_all)
+            
             H0Planck = Planck15.H0.value
             Om0Planck = Planck15.Om0
 
@@ -224,12 +268,26 @@ def load_selection_samples(
 
             weights = np.array(f["events"]["weights"][:])
 
-            ln_pdraw = np.array(
-                f[
-                    "events"]["lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z"
-                ][:]
+            # Extract joint probability
+            ln_pdraw_joint = np.array(
+                f["events"]["lnpdraw_mass1_source_mass2_source_redshift_spin1x_spin1y_spin1z_spin2x_spin2y_spin2z"][:]
             )
-            pdraw_all = np.exp(ln_pdraw) / (1.0 + z_all) ** 2 / ddL_of_z(
+            
+            # Analytically compute the 6D spin log-probability
+            a1 = np.sqrt(s1x_all**2 + s1y_all**2 + s1z_all**2)
+            a2 = np.sqrt(s2x_all**2 + s2y_all**2 + s2z_all**2)
+            
+            # LVK standard prior: p(s1, s2) = 1 / (16 * pi^2 * a1^2 * a2^2 * a_max^2)
+            ln_pdraw_spin = -np.log(16.0 * np.pi**2 * a1**2 * a2**2 * 0.99**2)
+            
+            # Safely calculate 1D chi_eff draw probability
+            log_p_chi = spin_prior._logprob(chieff_all, m1src_all, m2src_all, 0.99)
+            safe_log_p_chi = np.clip(log_p_chi, a_min=-50.0, a_max=None)
+            
+            # Swap the 6D spin probability for the 1D chi_eff probability in log-space
+            ln_pdraw_effective = ln_pdraw_joint - ln_pdraw_spin + safe_log_p_chi
+
+            pdraw_all = np.exp(ln_pdraw_effective) / (1.0 + z_all) ** 2 / ddL_of_z(
                 z_all, dL_all, H0Planck, Om0Planck
             )
 
@@ -252,12 +310,13 @@ def load_selection_samples(
     # ------------------------------------------------------------
     # Restrict to detected injections
     # ------------------------------------------------------------
-    m1detsels = m1det_all[detected]
-    m2detsels = m2det_all[detected]
-    dLsels    = dL_all[detected]
-    rasels    = ra_all[detected]
-    decsels   = dec_all[detected]
-    pdraw_sel = pdraw_all[detected]
+    m1detsels  = m1det_all[detected]
+    m2detsels  = m2det_all[detected]
+    chieffsels = chieff_all[detected]
+    dLsels     = dL_all[detected]
+    rasels     = ra_all[detected]
+    decsels    = dec_all[detected]
+    pdraw_sel  = pdraw_all[detected]
 
     Ndet = len(m1detsels)
     
@@ -266,15 +325,17 @@ def load_selection_samples(
     sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
     pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
     
+    pdraw_wt = pdraw_wt/np.sum(pdraw_wt)
     print(pdraw_wt.shape, ndraw, pdraw_wt.sum())
 
+    # Convert to jnp in requested order: m1detsels, m2detsels, dLsels, chieffsels, rasels, ...
     return (
         jnp.array(m1detsels),
         jnp.array(m2detsels),
         jnp.array(dLsels),
+        jnp.array(chieffsels),
         jnp.array(rasels),
         jnp.array(decsels),
         jnp.array(pdraw_wt),
         ndraw
     )
-

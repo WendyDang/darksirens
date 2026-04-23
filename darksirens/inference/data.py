@@ -30,13 +30,14 @@ def load_all_data(opts):
         nside = 1 
 
     # 3. Load GW posterior samples (Always required)
-    m1det, m2det, dL, ra, dec, p_pe, nEvents = load_gw_samples(
+    # Following the new convention: m1det, m2det, dL, chieff, ra, ...
+    m1det, m2det, dL, chieff, ra, dec, p_pe, nEvents = load_gw_samples(
         opts.gw_path, nsamp=opts.nsamp
     )
 
     # 4. Load Selection samples (Always required)
     (
-        m1detsels, m2detsels, dLsels,
+        m1detsels, m2detsels, dLsels, chieffsels,
         rasels, decsels, p_draw, Ndraw,
     ) = load_selection_samples(opts.gwselection_path)
 
@@ -60,6 +61,7 @@ def load_all_data(opts):
         m1det=m1det,
         m2det=m2det,
         dL=dL,
+        chieff=chieff,
         p_pe=p_pe,
         pixels_pe=jnp.asarray(pixels_pe),
         zgals_pe=zgals_pe,
@@ -70,6 +72,7 @@ def load_all_data(opts):
         m1detsels=m1detsels,
         m2detsels=m2detsels,
         dLsels=dLsels,
+        chieffsels=chieffsels,
         p_draw=p_draw,
         pixels_sel=jnp.asarray(pixels_sel),
         zgals_sel=zgals_sel,

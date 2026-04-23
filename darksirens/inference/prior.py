@@ -6,213 +6,104 @@ from darksirens.utils.cosmology import Om0Planck
 def get_fixed_population_params(pop_model):
     """
     Fiducial population parameters used when --fix_population=True.
-    These must match the exact dimension and component ordering of the backend parser.
+    These must match the exact dimension and component ordering of the backend parser:
+    Weights -> Masses -> Betas -> Spins -> Gamma.
     """
+    
+    # 1. Parse the requested model for shared flags
+    base_model = pop_model
+    if "_shared_beta_spin" in base_model:
+        base_model = base_model.replace("_shared_beta_spin", "")
+        shared_beta = True
+        shared_spin = True
+    else:
+        shared_beta = "_shared_beta" in base_model
+        shared_spin = "_shared_spin" in base_model
+        base_model = base_model.replace("_shared_beta", "").replace("_shared_spin", "")
 
-    # ---------------------------------------------------------
-    # PL + Peak
-    # ---------------------------------------------------------
-    if pop_model in ["powerlaw+peak"]:
-        return jnp.array([
-            0.1,   # f1
-            2.0,   # alpha
-            5.0,   # m_min
-            80.0,  # m_max
-            0.5,   # dm_min
-            10.0,  # dm_max
-            1.0,   # beta_PL
-            35.0,  # mu
-            5.0,   # sigma
-            1.0,   # beta_G
-            3.0    # gamma
-        ])
-
-    elif pop_model in ["powerlaw+peak_shared_beta"]:
-        return jnp.array([
-            0.1,   # f1
-            2.0,   # alpha
-            5.0,   # m_min
-            80.0,  # m_max
-            0.5,   # dm_min
-            10.0,  # dm_max
-            35.0,  # mu
-            5.0,   # sigma
-            1.0,   # beta (Shared)
-            3.0    # gamma
-        ])
-
-    # ---------------------------------------------------------
-    # BPL + 2 Peaks
-    # ---------------------------------------------------------
-    elif pop_model in ["brokenpowerlaw+2peaks"]:
-        return jnp.array([
-            0.10, 0.05,       # f1, f2
-            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass
-            5.0, 3.0,         # m_min, dm_min
-            80.0, 10.0,       # m_max, dm_max
-            1.0,              # beta_BPL
-            10.0, 3.0, 1.0,   # mu1, sigma1, beta_G1
-            35.0, 5.0, 1.0,   # mu2, sigma2, beta_G2
-            3.0               # gamma
-        ])
-
-    elif pop_model in ["brokenpowerlaw+2peaks_shared_beta"]:
-        return jnp.array([
-            0.10, 0.05,       # f1, f2
-            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass
-            5.0, 3.0,         # m_min, dm_min
-            80.0, 10.0,       # m_max, dm_max
-            10.0, 3.0,        # mu1, sigma1
-            35.0, 5.0,        # mu2, sigma2
-            1.0,              # beta (Shared)
-            3.0               # gamma
-        ])
-
-    # ---------------------------------------------------------
-    # BPL + 3 Peaks
-    # ---------------------------------------------------------
-    elif pop_model in ["brokenpowerlaw+3peaks"]:
-        return jnp.array([
-            0.10, 0.05, 0.03, # f1, f2, f3
-            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass
-            5.0, 3.0,         # m_min, dm_min
-            80.0, 10.0,       # m_max, dm_max
-            1.0,              # beta_BPL
-            10.0, 3.0, 1.0,   # mu1, sigma1, beta_G1
-            35.0, 5.0, 1.0,   # mu2, sigma2, beta_G2
-            70.0, 10.0, 1.0,  # mu3, sigma3, beta_G3
-            3.0               # gamma
-        ])
-
-    elif pop_model in ["brokenpowerlaw+3peaks_shared_beta"]:
-        return jnp.array([
-            0.10, 0.05, 0.03, # f1, f2, f3
-            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass
-            5.0, 3.0,         # m_min, dm_min
-            80.0, 10.0,       # m_max, dm_max
-            10.0, 3.0,        # mu1, sigma1
-            35.0, 5.0,        # mu2, sigma2
-            70.0, 10.0,       # mu3, sigma3
-            1.0,              # beta (Shared)
-            3.0               # gamma
-        ])
-
-    # ---------------------------------------------------------
-    # 2 PLs + 1 Peak
-    # ---------------------------------------------------------
-    elif pop_model in ["twopowerlaws+peak"]:
-        return jnp.array([
-            0.20, 0.10,       # f1, f2
-            2.0, 5.0, 80.0, 3.0, 10.0, 1.0, # alpha_1, m_min_1, m_max_1, dm_min_1, dm_max_1, beta_PL1
-            4.0, 5.0, 80.0, 3.0, 10.0, 1.0, # alpha_2, m_min_2, m_max_2, dm_min_2, dm_max_2, beta_PL2
-            35.0, 5.0, 1.0,   # mu, sigma, beta_G
-            3.0               # gamma
-        ])
-
-    elif pop_model in ["twopowerlaws+peak_shared_beta"]:
-        return jnp.array([
-            0.20, 0.10,       # f1, f2
-            2.0, 5.0, 80.0, 3.0, 10.0, # alpha_1, m_min_1, m_max_1, dm_min_1, dm_max_1
-            4.0, 5.0, 80.0, 3.0, 10.0, # alpha_2, m_min_2, m_max_2, dm_min_2, dm_max_2
-            35.0, 5.0,        # mu, sigma
-            1.0,              # beta (Shared)
-            3.0               # gamma
-        ])
-
-    # ---------------------------------------------------------
-    # 2 PLs + 2 Peaks
-    # ---------------------------------------------------------
-    elif pop_model in ["twopowerlaws+2peaks"]:
-        # Total parameters: 22
-        return jnp.array([
-            0.15, 0.10, 0.05,               # f1, f2, f3 (Component weights)
-            2.0, 5.0, 80.0, 3.0, 10.0, 1.0, # alpha_1, m_min_1, m_max_1, dm_min_1, dm_max_1, beta_PL1
-            4.0, 5.0, 80.0, 3.0, 10.0, 1.0, # alpha_2, m_min_2, m_max_2, dm_min_2, dm_max_2, beta_PL2
-            10.0, 3.0, 1.0,                 # mu1, sigma1, beta_G1 (Peak 1)
-            35.0, 5.0, 1.0,                 # mu2, sigma2, beta_G2 (Peak 2)
-            3.0                             # gamma (Global redshift evolution)
-        ])
-
-    elif pop_model in ["twopowerlaws+2peaks_shared_beta"]:
-        # Total parameters: 19
-        return jnp.array([
-            0.15, 0.10, 0.05,               # f1, f2, f3 (Component weights)
-            2.0, 5.0, 80.0, 3.0, 10.0,      # alpha_1, m_min_1, m_max_1, dm_min_1, dm_max_1
-            4.0, 5.0, 80.0, 3.0, 10.0,      # alpha_2, m_min_2, m_max_2, dm_min_2, dm_max_2
-            10.0, 3.0,                      # mu1, sigma1 (Peak 1)
-            35.0, 5.0,                      # mu2, sigma2 (Peak 2)
-            1.0,                            # beta (Shared)
-            3.0                             # gamma (Global redshift evolution)
-        ])
-
-    # ---------------------------------------------------------
-    # 2 PLs + 3 Peaks
-    # ---------------------------------------------------------
-    elif pop_model in ["twopowerlaws+3peaks"]:
-        # Total parameters: 26
-        return jnp.array([
-            0.15, 0.10, 0.05, 0.03,         # f1, f2, f3, f4 (Component weights)
-            2.0, 5.0, 80.0, 3.0, 10.0, 1.0, # alpha_1, m_min_1, m_max_1, dm_min_1, dm_max_1, beta_PL1
-            4.0, 5.0, 80.0, 3.0, 10.0, 1.0, # alpha_2, m_min_2, m_max_2, dm_min_2, dm_max_2, beta_PL2
-            10.0, 3.0, 1.0,                 # mu1, sigma1, beta_G1 (Peak 1)
-            35.0, 5.0, 1.0,                 # mu2, sigma2, beta_G2 (Peak 2)
-            70.0, 10.0, 1.0,                # mu3, sigma3, beta_G3 (Peak 3)
-            3.0                             # gamma (Global redshift evolution)
-        ])
-
-    elif pop_model in ["twopowerlaws+3peaks_shared_beta"]:
-        # Total parameters: 22
-        return jnp.array([
-            0.15, 0.10, 0.05, 0.03,         # f1, f2, f3, f4 (Component weights)
-            2.0, 5.0, 80.0, 3.0, 10.0,      # alpha_1, m_min_1, m_max_1, dm_min_1, dm_max_1
-            4.0, 5.0, 80.0, 3.0, 10.0,      # alpha_2, m_min_2, m_max_2, dm_min_2, dm_max_2
-            10.0, 3.0,                      # mu1, sigma1 (Peak 1)
-            35.0, 5.0,                      # mu2, sigma2 (Peak 2)
-            70.0, 10.0,                     # mu3, sigma3 (Peak 3)
-            1.0,                            # beta (Shared)
-            3.0                             # gamma (Global redshift evolution)
-        ])
-
-    # ---------------------------------------------------------
-    # BPL + 2 Peaks + 1 PL
-    # ---------------------------------------------------------
-    elif pop_model in ["brokenpowerlaw+2peaks+powerlaw"]:
-        return jnp.array([
-            0.10, 0.05, 0.05, # f1, f2, f3 (3 fractions for 4 components)
-            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass (BPL)
-            5.0, 3.0,         # m_min, dm_min (BPL)
-            80.0, 10.0,       # m_max, dm_max (BPL)
-            1.0,              # beta_BPL
-            10.0, 3.0, 1.0,   # mu1, sigma1, beta_G1
-            35.0, 5.0, 1.0,   # mu2, sigma2, beta_G2
-            3.0,              # alpha_PL
-            50.0,             # m_min_PL
-            100.0,            # m_max_PL
-            3.0,              # dm_min_PL
-            10.0,             # dm_max_PL
-            1.0,              # beta_PL
-            3.0               # gamma
-        ])
-
-    elif pop_model in ["brokenpowerlaw+2peaks+powerlaw_shared_beta"]:
-        return jnp.array([
-            0.10, 0.05, 0.05, # f1, f2, f3
-            2.0, 4.0, 30.0,   # alpha_1, alpha_2, break_mass (BPL)
-            5.0, 3.0,         # m_min, dm_min (BPL)
-            80.0, 10.0,       # m_max, dm_max (BPL)
-            10.0, 3.0,        # mu1, sigma1
-            35.0, 5.0,        # mu2, sigma2
-            3.0,              # alpha_PL
-            50.0,             # m_min_PL
-            100.0,            # m_max_PL
-            3.0,              # dm_min_PL
-            10.0,             # dm_max_PL
-            1.0,              # beta (Shared)
-            3.0               # gamma
-        ])
-
+    # 2. Define Weights and Mass parameters per base model
+    if base_model == "powerlaw+peak":
+        n_comp = 2
+        weights = [0.1]
+        masses = [
+            2.0, 5.0, 80.0, 0.5, 10.0,  # PL: alpha, m_min, m_max, dm_min, dm_max
+            35.0, 5.0                   # G: mu, sigma
+        ]
+        
+    elif base_model == "brokenpowerlaw+2peaks":
+        n_comp = 3
+        weights = [0.10, 0.05]
+        masses = [
+            2.0, 4.0, 30.0, 5.0, 80.0, 3.0, 10.0, # BPL: a1, a2, m_break, m_min, m_max, dm_min, dm_max
+            10.0, 3.0,                            # G1: mu1, sigma1
+            35.0, 5.0                             # G2: mu2, sigma2
+        ]
+        
+    elif base_model == "brokenpowerlaw+3peaks":
+        n_comp = 4
+        weights = [0.10, 0.05, 0.03]
+        masses = [
+            2.0, 4.0, 30.0, 5.0, 80.0, 3.0, 10.0, # BPL
+            10.0, 3.0,                            # G1
+            35.0, 5.0,                            # G2
+            70.0, 10.0                            # G3: mu3, sigma3
+        ]
+        
+    elif base_model == "twopowerlaws+peak":
+        n_comp = 3
+        weights = [0.20, 0.10]
+        masses = [
+            2.0, 5.0, 80.0, 3.0, 10.0, # PL1
+            4.0, 5.0, 80.0, 3.0, 10.0, # PL2
+            35.0, 5.0                  # G
+        ]
+        
+    elif base_model == "twopowerlaws+2peaks":
+        n_comp = 4
+        weights = [0.15, 0.10, 0.05]
+        masses = [
+            2.0, 5.0, 80.0, 3.0, 10.0, # PL1
+            4.0, 5.0, 80.0, 3.0, 10.0, # PL2
+            10.0, 3.0,                 # G1
+            35.0, 5.0                  # G2
+        ]
+        
+    elif base_model == "twopowerlaws+3peaks":
+        n_comp = 5
+        weights = [0.15, 0.10, 0.05, 0.03]
+        masses = [
+            2.0, 5.0, 80.0, 3.0, 10.0, # PL1
+            4.0, 5.0, 80.0, 3.0, 10.0, # PL2
+            10.0, 3.0,                 # G1
+            35.0, 5.0,                 # G2
+            70.0, 10.0                 # G3
+        ]
+        
+    elif base_model == "brokenpowerlaw+2peaks+powerlaw":
+        n_comp = 4
+        weights = [0.10, 0.05, 0.05]
+        masses = [
+            2.0, 4.0, 30.0, 5.0, 80.0, 3.0, 10.0, # BPL
+            10.0, 3.0,                            # G1
+            35.0, 5.0,                            # G2
+            3.0, 50.0, 100.0, 3.0, 10.0           # PL
+        ]
+        
     else:
         raise ValueError(f"No fixed parameters defined for model '{pop_model}'")
+
+    # 3. Define Pairing (Beta) Parameters
+    betas = [1.0] if shared_beta else [1.0] * n_comp
+    
+    # 4. Define Spin Parameters (mu_chi=0.0, sigma_chi=0.1)
+    spins = [0.0, 0.1] if shared_spin else [0.0, 0.1] * n_comp
+    
+    # 5. Define Gamma
+    gamma = [3.0]
+
+    # Assemble global array adhering to unified strict ordering
+    full_params = weights + masses + betas + spins + gamma
+    return jnp.array(full_params)
 
 
 def build_parameter_space(pop_model, fix_population, fix_cosmology, fix_survey):

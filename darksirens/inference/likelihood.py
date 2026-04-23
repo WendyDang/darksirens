@@ -26,9 +26,9 @@ def darksiren_log_likelihood(
     cosmo_params,
     survey_params,
     pop_params,
-    m1det, m2det, dL, p_pe, pixels_pe,
+    m1det, m2det, dL, chieff, p_pe, pixels_pe,
     zgals_pe, dzgals_pe, wgals_pe,
-    m1detsels, m2detsels, dLsels, p_draw,
+    m1detsels, m2detsels, dLsels, chieffsels, p_draw,
     pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
     nEvents, nsamp, Ndraw, apix,
     pop_model, universe_model,
@@ -59,7 +59,8 @@ def darksiren_log_likelihood(
     m2sels = m2detsels / (1 + zsels)
     qsels = m2sels / m1sels
 
-    log_det_weights = log_p_pop(m1sels, qsels, zsels, pop_params)
+    # Pass chieffsels to population evaluation
+    log_det_weights = log_p_pop(m1sels, qsels, zsels, chieffsels, pop_params)
     log_det_weights += logPriorUniverse_safe(
         zsels, pixels_sel,
         H0, Om0, n0, z50, w, delta,
@@ -83,7 +84,8 @@ def darksiren_log_likelihood(
     m2 = m2det / (1 + z)
     q = m2 / m1
 
-    log_weights = log_p_pop(m1, q, z, pop_params)
+    # Pass chieff to population evaluation
+    log_weights = log_p_pop(m1, q, z, chieff, pop_params)
     log_weights += logPriorUniverse_safe(
         z, pixels_pe,
         H0, Om0, n0, z50, w, delta,
@@ -112,8 +114,11 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
 
     # Unpack always-required data
     m1det, m2det, dL = data["m1det"], data["m2det"], data["dL"]
+    chieff = data["chieff"]
     p_pe, pixels_pe = data["p_pe"], data["pixels_pe"]
+    
     m1detsels, m2detsels, dLsels = data["m1detsels"], data["m2detsels"], data["dLsels"]
+    chieffsels = data["chieffsels"]
     p_draw, pixels_sel = data["p_draw"], data["pixels_sel"]
     
     nEvents, nsamp, Ndraw, apix = data["nEvents"], opts.nsamp, data["Ndraw"], data["apix"]
@@ -158,9 +163,9 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
             (H0, Om0),
             survey_params,
             pop_params,
-            m1det, m2det, dL, p_pe, pixels_pe,
+            m1det, m2det, dL, chieff, p_pe, pixels_pe,
             zgals_pe, dzgals_pe, wgals_pe,
-            m1detsels, m2detsels, dLsels, p_draw,
+            m1detsels, m2detsels, dLsels, chieffsels, p_draw,
             pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
             nEvents, nsamp, Ndraw, apix,
             pop_model, universe_model,
