@@ -30,6 +30,10 @@ from darksirens.utils.cosmology import *
 
 from gwdistributions.distributions.spin import IsotropicUniformMagnitudeChiEffGivenComponentMass
 
+import warnings
+warnings.filterwarnings("ignore", message="invalid value encountered in log")
+warnings.filterwarnings("ignore", message="invalid value encountered in arctanh")
+
 spin_prior = IsotropicUniformMagnitudeChiEffGivenComponentMass()
 spin_prior._init_values(max_spin_magnitude=0.99)
 

@@ -166,16 +166,19 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
 # ------------------------------------------------------------
 # JAX posterior predictive engine (batched, per-sample PPD)
 # ------------------------------------------------------------
-def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid):
+def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid, chigrid):
     mgrid = jnp.asarray(mgrid)
     qgrid = jnp.asarray(qgrid)
     zgrid = jnp.asarray(zgrid)
+    chigrid = jnp.asarray(chigrid)
 
     nm = mgrid.size
 
-    m1_grid = mgrid[:, None, None]
-    q_grid  = qgrid[None, :, None]
-    z_grid  = zgrid[None, None, :]
+    # Expand to 4D: (m1, q, z, chi)
+    m1_grid  = mgrid[:, None, None, None]
+    q_grid   = qgrid[None, :, None, None]
+    z_grid   = zgrid[None, None, :, None]
+    chi_grid = chigrid[None, None, None, :]
 
     m2_vals = mgrid
     q_eval = m2_vals[None, :] / mgrid[:, None]
@@ -184,20 +187,44 @@ def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid):
 
     @jax.jit
     def single_theta(theta):
-        logp = pop_model(m1_grid, q_grid, z_grid, theta)
+        # pop_model must now accept chi_grid
+        logp = pop_model(m1_grid, q_grid, z_grid, chi_grid, theta)
         p = jnp.exp(logp)
 
-        p_m1 = jnp.trapezoid(jnp.trapezoid(p, zgrid, axis=2), qgrid, axis=1)
+        # -----------------------------------------------------
+        # 1D Marginalizations (Integrate out 3 dimensions)
+        # -----------------------------------------------------
+        # p(m1): integrate over chi (axis 3), z (axis 2), q (axis 1)
+        p_m1 = jnp.trapezoid(
+            jnp.trapezoid(jnp.trapezoid(p, chigrid, axis=3), zgrid, axis=2), qgrid, axis=1
+        )
         p_m1 /= jnp.trapezoid(p_m1, mgrid)
 
-        p_q = jnp.trapezoid(jnp.trapezoid(p, zgrid, axis=2), mgrid, axis=0)
+        # p(q): integrate over chi (axis 3), z (axis 2), m1 (axis 0)
+        p_q = jnp.trapezoid(
+            jnp.trapezoid(jnp.trapezoid(p, chigrid, axis=3), zgrid, axis=2), mgrid, axis=0
+        )
         p_q /= jnp.trapezoid(p_q, qgrid)
 
-        p_z = jnp.trapezoid(jnp.trapezoid(p, qgrid, axis=1), mgrid, axis=0)
+        # p(z): integrate over chi (axis 3), q (axis 1), m1 (axis 0)
+        p_z = jnp.trapezoid(
+            jnp.trapezoid(jnp.trapezoid(p, chigrid, axis=3), qgrid, axis=1), mgrid, axis=0
+        )
         p_z /= jnp.trapezoid(p_z, zgrid)
 
-        p_m1q = jnp.trapezoid(p, zgrid, axis=2)
+        # p(chi): integrate over z (axis 2), q (axis 1), m1 (axis 0)
+        p_chi = jnp.trapezoid(
+            jnp.trapezoid(jnp.trapezoid(p, zgrid, axis=2), qgrid, axis=1), mgrid, axis=0
+        )
+        p_chi /= jnp.trapezoid(p_chi, chigrid)
 
+        # -----------------------------------------------------
+        # 2D Joint Mass Distribution p(m1, m2)
+        # -----------------------------------------------------
+        # First, marginalize over chi and z to get p(m1, q)
+        p_m1q = jnp.trapezoid(jnp.trapezoid(p, chigrid, axis=3), zgrid, axis=2)
+
+        # Interpolate q onto m2 grid
         p_interp = jax.vmap(
             lambda row, qev: jnp.interp(qev, qgrid, row, left=0.0, right=0.0)
         )(p_m1q, q_eval)
@@ -212,13 +239,14 @@ def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid):
         p_m2 = jnp.trapezoid(p_m1m2, mgrid, axis=0)
         p_m2 /= jnp.trapezoid(p_m2, mgrid)
 
-        return p_m1, p_m2, p_q, p_z, p_m1m2
+        return p_m1, p_m2, p_q, p_z, p_chi, p_m1m2
 
     return single_theta
 
 
-def auto_batch_size(nsamples, nm, nq, nz, target_bytes=2e9):
-    per_sample_bytes = nm * nq * nz * 8.0
+def auto_batch_size(nsamples, nm, nq, nz, nchi, target_bytes=2e9):
+    # Now calculating bytes for a 4D array per sample
+    per_sample_bytes = nm * nq * nz * nchi * 8.0
     if per_sample_bytes == 0:
         return min(nsamples, 64)
 
@@ -228,27 +256,30 @@ def auto_batch_size(nsamples, nm, nq, nz, target_bytes=2e9):
 
 
 def posterior_predictive_mass_distributions_jax(
-    pop_model, samples, mgrid, qgrid, zgrid, batch_size=None
+    pop_model, samples, mgrid, qgrid, zgrid, chigrid, batch_size=None
 ):
     samples = jnp.asarray(samples)
     mgrid = jnp.asarray(mgrid)
     qgrid = jnp.asarray(qgrid)
     zgrid = jnp.asarray(zgrid)
+    chigrid = jnp.asarray(chigrid)
 
     ns = samples.shape[0]
     nm = mgrid.size
     nq = qgrid.size
     nz = zgrid.size
+    nchi = chigrid.size
 
     if batch_size is None:
-        batch_size = auto_batch_size(ns, nm, nq, nz)
+        batch_size = auto_batch_size(ns, nm, nq, nz, nchi)
 
-    single_theta = make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid)
+    single_theta = make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid, chigrid)
 
     pm1_list   = []
     pm2_list   = []
     pq_list    = []
     pz_list    = []
+    pchi_list  = []
     pm1m2_list = []
 
     n_batches = (ns + batch_size - 1) // batch_size
@@ -258,21 +289,23 @@ def posterior_predictive_mass_distributions_jax(
         end = min((i + 1) * batch_size, ns)
         batch = samples[start:end]
 
-        p1_batch, p2_batch, pq_batch, pz_batch, p2d_batch = jax.vmap(single_theta)(batch)
+        p1_batch, p2_batch, pq_batch, pz_batch, pchi_batch, p2d_batch = jax.vmap(single_theta)(batch)
 
         pm1_list.append(p1_batch)
         pm2_list.append(p2_batch)
         pq_list.append(pq_batch)
         pz_list.append(pz_batch)
+        pchi_list.append(pchi_batch)
         pm1m2_list.append(p2d_batch)
 
     pm1_samples   = jnp.concatenate(pm1_list,   axis=0)
     pm2_samples   = jnp.concatenate(pm2_list,   axis=0)
     pq_samples    = jnp.concatenate(pq_list,    axis=0)
     pz_samples    = jnp.concatenate(pz_list,    axis=0)
+    pchi_samples  = jnp.concatenate(pchi_list,  axis=0)
     pm1m2_samples = jnp.concatenate(pm1m2_list, axis=0)
 
-    return pm1_samples, pm2_samples, pq_samples, pz_samples, pm1m2_samples
+    return pm1_samples, pm2_samples, pq_samples, pz_samples, pchi_samples, pm1m2_samples
 
 
 # ------------------------------------------------------------
@@ -300,7 +333,6 @@ def plot_1d_spectrum(
     logy=True,
 ):
     if colors is None:
-        # Using the colorblind palette for better accessibility
         import seaborn as sns
         colors = sns.color_palette('colorblind')
 
@@ -309,39 +341,32 @@ def plot_1d_spectrum(
 
     means = []
     for i, ppd in enumerate(ppd_list):
-        ppd = jnp.asarray(ppd)
-        # Assuming summarize_ppd is defined in your environment
-        median, lower, upper = summarize_ppd(ppd, limits)
-
+        # We assume ppd is a tuple of (median, lower, upper)
+        median, lower, upper = ppd 
         color = colors[i % len(colors)]
 
-        # --- The Shading ---
         ax.fill_between(
             xgrid, np.asarray(lower), np.asarray(upper),
-            alpha=0.15, # Slightly lighter to make the lines pop
+            alpha=0.15,
             color=color,
             label=labels[i],
-            lw=0 # Remove the default edge from the fill
+            lw=0
         )
 
-        # --- THE FIX: The thin boundary lines ---
-        # We plot these separately to have full control over the linewidth
         ax.plot(xgrid, np.asarray(lower), color=color, lw=0.8, alpha=0.6)
         ax.plot(xgrid, np.asarray(upper), color=color, lw=0.8, alpha=0.6)
-
-        mean_curve = np.asarray(ppd.mean(axis=0))
-        means.append(mean_curve)
         
-        # Optional: Plot the mean or median line as well for clarity
-        #ax.plot(xgrid, mean_curve, color=color, lw=2.5)
+        # Optional: plotting the median to represent the curve's center
+        ax.plot(xgrid, np.asarray(median), color=color, lw=2.5)
 
-    # --- Formatting Logic ---
+        means.append(np.asarray(median))
+
     if xlim is None:
         xlim = (xgrid.min(), xgrid.max())
     if ylim is None:
         mean_arr = np.vstack(means)
         ymin = max(1e-6, float(mean_arr.min()))
-        ymax = float(mean_arr.max()) * 1.5 # Extra headroom for legend
+        ymax = float(mean_arr.max()) * 1.5
         ylim = (ymin, ymax)
 
     ax.set_xlim(*xlim)
@@ -357,61 +382,6 @@ def plot_1d_spectrum(
 
     fig.tight_layout()
     return fig
-
-
-def summarize_ppd_2d(ppd2d_samples):
-    return np.asarray(jnp.median(ppd2d_samples, axis=0))
-
-
-def plot_joint_m1m2(
-    mgrid,
-    ppd2d_list,
-    labels,
-    colors=None,
-    figsize=(12, 10),
-    n_levels=5,
-):
-    if colors is None:
-        colors = plt.cm.tab10.colors
-
-    mgrid = np.asarray(mgrid)
-    M1, M2 = np.meshgrid(mgrid, mgrid, indexing="ij")
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    legend_handles = []
-
-    for i, ppd2d in enumerate(ppd2d_list):
-        median = summarize_ppd_2d(ppd2d)
-        color = colors[i % len(colors)]
-
-        flat = median.ravel()
-        flat = flat[flat > 0]
-        qs = np.linspace(0.1, 0.9, n_levels)
-        levels = np.quantile(flat, qs)
-
-        cs = ax.contour(
-            M1, M2, median,
-            levels=levels,
-            colors=[color],
-            linewidths=2,
-        )
-
-        proxy = Line2D([0], [0], color=color, lw=2)
-        legend_handles.append(proxy)
-
-    ax.set_xlabel(r"$m_1$ [$M_\odot$]", fontsize=28)
-    ax.set_ylabel(r"$m_2$ [$M_\odot$]", fontsize=28)
-    ax.tick_params(labelsize=20)
-
-    ax.legend(legend_handles, labels, fontsize=20, frameon=False, loc='upper left')
-
-    ax.set_xlim(mgrid.min(), mgrid.max())
-    ax.set_ylim(mgrid.min(), mgrid.max())
-
-    fig.tight_layout()
-    return fig
-
 
 # ------------------------------------------------------------
 # CLI / main
@@ -429,6 +399,12 @@ def main():
     parser.add_argument("--nm", type=int, default=300)
     parser.add_argument("--nq", type=int, default=100)
     parser.add_argument("--nz", type=int, default=50)
+    
+    # New arguments for chieff
+    parser.add_argument("--nchi", type=int, default=50)
+    parser.add_argument("--chimin", type=float, default=-1.0)
+    parser.add_argument("--chimax", type=float, default=1.0)
+
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--cred_lo", type=float, default=5.0)
     parser.add_argument("--cred_hi", type=float, default=95.0)
@@ -437,19 +413,19 @@ def main():
     mgrid = np.linspace(args.mmin, args.mmax, args.nm)
     qgrid = np.linspace(0.01, 1.0, args.nq)
     zgrid = np.linspace(0.0, 2.0, args.nz)
+    chigrid = np.linspace(args.chimin, args.chimax, args.nchi)
 
     pm1_list   = []
     pm2_list   = []
     pq_list    = []
     pz_list    = []
-    pm1m2_list = []
+    pchi_list  = []
     labels     = []
-
     logZs      = []
     logZerrs   = []
-
+    
     limits = (args.cred_lo, args.cred_hi)
-
+    
     for run_dir in args.run_dirs:
         print(f"\n=== Processing model: {run_dir} ===")
 
@@ -461,15 +437,15 @@ def main():
             log10Z = logZ / np.log(10.0)
             log10Zerr = logZerr / np.log(10.0) if logZerr is not None else None
         else:
-            log10Z = None
-            log10Zerr = None
+            log10Z = 0.0
+            log10Zerr = 0.0
 
         logZs.append(log10Z)
         logZerrs.append(log10Zerr)
 
-        pm1_samples, pm2_samples, pq_samples, pz_samples, pm1m2_samples = (
+        pm1_samples, pm2_samples, pq_samples, pz_samples, pchi_samples, pm1m2_samples = (
             posterior_predictive_mass_distributions_jax(
-                pop_model, samples, mgrid, qgrid, zgrid, batch_size=args.batch_size
+                pop_model, samples, mgrid, qgrid, zgrid, chigrid, batch_size=args.batch_size
             )
         )
 
@@ -478,15 +454,14 @@ def main():
         pm2_med, pm2_lo, pm2_hi = summarize_ppd(pm2_samples, limits)
         pq_med,  pq_lo,  pq_hi  = summarize_ppd(pq_samples,  limits)
         pz_med,  pz_lo,  pz_hi  = summarize_ppd(pz_samples,  limits)
+        pchi_med, pchi_lo, pchi_hi = summarize_ppd(pchi_samples, limits)
 
-        #pm1m2_med = summarize_ppd_2d(pm1m2_samples)
-
-        # Store only summaries
+        # Store summaries as tuples for plotting
         pm1_list.append((pm1_med, pm1_lo, pm1_hi))
         pm2_list.append((pm2_med, pm2_lo, pm2_hi))
         pq_list.append((pq_med, pq_lo, pq_hi))
         pz_list.append((pz_med, pz_lo, pz_hi))
-        #pm1m2_list.append(pm1m2_med)
+        pchi_list.append((pchi_med, pchi_lo, pchi_hi))
 
         # Free GPU memory
         del pm1_samples, pm2_samples, pq_samples, pz_samples, pm1m2_samples
@@ -548,14 +523,15 @@ def main():
         logy=True,
     )
     fig_z.savefig("pz_all_models.pdf")
-
-#     # joint p(m1,m2)
-#     fig_joint = plot_joint_m1m2(
-#         mgrid,
-#         ppd2d_list=pm1m2_list,
-#         labels=labels,
-#     )
-#     fig_joint.savefig("pm1m2_all_models.pdf")
+    
+    # p(chi)
+    fig_chi = plot_1d_spectrum(
+        chigrid, pchi_list, labels, limits,
+        xlabel=r"$\chi_\mathrm{eff}$",
+        ylabel=r"$p(\chi_\mathrm{eff})$",
+        xlim=(args.chimin, args.chimax), ylim=(1e-2, 10.0), logy=True
+    )
+    fig_chi.savefig("pchi_all_models.pdf")
 
     # ------------------------------------------------------------
     # Evidence comparison (separate figure)
