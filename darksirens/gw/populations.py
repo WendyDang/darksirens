@@ -316,6 +316,7 @@ class GaussianProcessMassExp(MassComponent):
         return jnp.interp(m, MASS_GRID, pm_grid, left=0.0, right=0.0)
     
 
+
 # ======================================================================
 # 4. Pairing models (normalized on Q_GRID | m1)
 # ======================================================================
@@ -387,6 +388,148 @@ class GaussianPairing(PairingModel):
         p = sfilter_low(m2, m_min, dm_min) * p
         return jnp.where(m2 < m_min, 0.0, p)
 
+
+@dataclass
+class GaussianProcessMassRatio1D(PairingModel):
+    beta_spec: ParamSpec
+    amp_spec: ParamSpec
+    ls_spec: ParamSpec
+    
+    # Reduced to 5 Latent nodes to prevent overfitting 
+    # while capturing power-law + Gaussian peak features
+    y0_spec: ParamSpec
+    y1_spec: ParamSpec
+    y2_spec: ParamSpec
+    y3_spec: ParamSpec
+    y4_spec: ParamSpec
+
+    @property
+    def param_specs(self):
+        return [
+            self.beta_spec, self.amp_spec, self.ls_spec,
+            self.y0_spec, self.y1_spec, self.y2_spec, 
+            self.y3_spec, self.y4_spec
+        ]
+
+    def _eval_unnorm(self, m1, q, m_min, dm_min, t):
+        # 1. Unpack hyper-parameters
+        beta, amp, ls = t[0], t[1], t[2]
+        
+        # Extract the 5 nodes
+        y_nodes = jnp.array(t[3:8])
+
+        # 2. Setup Nodes and Evaluation Grid for q
+        # 5 nodes evenly spaced across the bulk of the q domain
+        q_nodes = jnp.linspace(0.1, 1.0, 5)
+        
+        q_eval_grid = jnp.linspace(0.01, 1.0, 500)
+
+        # 3. Define Mean Function and Kernel
+        def mean_fn(x):
+            return beta * jnp.log(x)
+
+        kernel = (amp**2) * kernels.Matern52(scale=ls)
+
+        # 4. Build GP Prior and Condition on Latent Nodes
+        gp_prior = GaussianProcess(kernel=kernel, X=q_nodes, mean=mean_fn, diag=1e-4)
+        _, gp_cond = gp_prior.condition(y_nodes, q_eval_grid)
+        
+        # 5. Extract and safe-guard the grid predictions
+        log_pq_grid = jnp.nan_to_num(gp_cond.loc, nan=-20.0)
+        log_pq_grid = jnp.clip(log_pq_grid, -10.0, 10.0)
+        pq_grid = jnp.exp(log_pq_grid)
+
+        # 6. Interpolate to the requested q values
+        pq = jnp.interp(q, q_eval_grid, pq_grid, left=0.0, right=0.0)
+
+        # 7. Apply physical cutoffs (m2 > m_min)
+        m1_b, q_b = jnp.broadcast_arrays(m1, q)
+        m2 = q_b * m1_b
+        
+        smooth_cut = sfilter_low(m2, m_min, dm_min)
+        smooth_cut = jnp.nan_to_num(smooth_cut, nan=0.0)
+        
+        p = smooth_cut * pq
+        
+        return jnp.where(m2 < m_min, 1e-20, p)
+
+
+@dataclass
+class GaussianProcessPairing2D(PairingModel):
+    beta_spec: ParamSpec
+    amp_spec: ParamSpec
+    ls_m_spec: ParamSpec
+    ls_q_spec: ParamSpec
+    
+    # 16 Latent nodes for a 4x4 grid across (m1, q)
+    y0_spec: ParamSpec;  y1_spec: ParamSpec;  y2_spec: ParamSpec;  y3_spec: ParamSpec
+    y4_spec: ParamSpec;  y5_spec: ParamSpec;  y6_spec: ParamSpec;  y7_spec: ParamSpec
+    y8_spec: ParamSpec;  y9_spec: ParamSpec;  y10_spec: ParamSpec; y11_spec: ParamSpec
+    y12_spec: ParamSpec; y13_spec: ParamSpec; y14_spec: ParamSpec; y15_spec: ParamSpec
+
+    @property
+    def param_specs(self):
+        return [
+            self.beta_spec, self.amp_spec, self.ls_m_spec, self.ls_q_spec,
+            self.y0_spec,  self.y1_spec,  self.y2_spec,  self.y3_spec,
+            self.y4_spec,  self.y5_spec,  self.y6_spec,  self.y7_spec,
+            self.y8_spec,  self.y9_spec,  self.y10_spec, self.y11_spec,
+            self.y12_spec, self.y13_spec, self.y14_spec, self.y15_spec
+        ]
+
+    def _eval_unnorm(self, m1, q, m_min, dm_min, t):
+        # 1. Unpack parameters
+        beta, amp, ls_m, ls_q = t[0], t[1], t[2], t[3]
+        y_nodes = jnp.array(t[4:20])
+
+        # 2. Setup the 4x4 Latent Node Grid
+        log_m1_nodes = jnp.log(jnp.array([10.0, 20.0, 40.0, 80.0]))
+        q_nodes = jnp.array([0.20, 0.40, 0.60, 0.80])
+        
+        M_node, Q_node = jnp.meshgrid(log_m1_nodes, q_nodes, indexing="ij")
+        X_nodes = jnp.stack([M_node.flatten(), Q_node.flatten()], axis=-1)
+
+        # 3. Setup the Target Grid 
+        shape = jnp.broadcast_shapes(jnp.shape(m1), jnp.shape(q))
+        m1_b, q_b = jnp.broadcast_arrays(m1, q)
+        
+        X_test = jnp.stack([jnp.log(m1_b), q_b], axis=-1)
+        X_test_flat = X_test.reshape(-1, 2)
+
+        # Scale coordinates manually for ARD
+        scales = jnp.array([ls_m, ls_q])
+        X_nodes_scaled = X_nodes / scales
+        X_test_scaled = X_test_flat / scales
+
+        # 4. Define Mean Function and Kernel
+        def mean_fn(x_scaled):
+            q_true = x_scaled[..., 1] * ls_q
+            return beta * jnp.log(q_true + 0.01)
+
+        kernel = (amp**2) * kernels.Matern52()
+
+        # 5. Condition and Predict 
+        # FIX 1: Aggressive jitter (1e-2 instead of 1e-4) to prevent Cholesky failure
+        gp_prior = GaussianProcess(kernel=kernel, X=X_nodes_scaled, mean=mean_fn, diag=1e-2)
+        _, gp_cond = gp_prior.condition(y_nodes, X_test_scaled)
+        
+        # FIX 2: Intercept any remaining GP NaNs and force them to a highly negative log-prob
+        safe_loc = jnp.nan_to_num(gp_cond.loc, nan=-20.0)
+        
+        log_pq = jnp.clip(safe_loc.reshape(shape), -10.0, 10.0)
+        p = jnp.exp(log_pq)
+
+        # 6. Apply physical cutoffs
+        m2 = q_b * m1_b
+        
+        # FIX 3: Intercept division-by-zero NaNs if dm_min hits 0.0
+        smooth_cut = sfilter_low(m2, m_min, dm_min)
+        smooth_cut = jnp.nan_to_num(smooth_cut, nan=0.0) 
+        
+        p = smooth_cut * p
+        
+        return jnp.where(m2 < m_min, 1e-20, p)
+    
 
 # ======================================================================
 # 4.5 Spin models (normalized on CHI_GRID)
@@ -692,6 +835,63 @@ def _gp_experimental(
         y9_spec     = ParamSpec(y_labels[9],  y_lo, y_hi),
         y10_spec    = ParamSpec(y_labels[10], y_lo, y_hi),
     )
+
+def _gp_pairing_experimental(
+    beta_label=r"$\beta_q$", amp_label=r"$A_q$", ls_label=r"$l_q$",
+    y_labels=[r"$y_{q,%d}$" % i for i in range(5)],
+    
+    # Hyperparameter Bounds
+    beta_lo=-4.0, beta_hi=12.0,
+    amp_lo=0.01, amp_hi=5.0,
+    ls_lo=0.05, ls_hi=1.0,  # Domain is 0 to 1, so ls=1 spans the whole domain smoothly
+    y_lo=-7.0, y_hi=7.0     # Same generous vertical range for log-density
+):
+    return GaussianProcessMassRatio1D(
+        beta_spec = ParamSpec(beta_label, beta_lo, beta_hi),
+        amp_spec  = ParamSpec(amp_label,  amp_lo,  amp_hi),
+        ls_spec   = ParamSpec(ls_label,   ls_lo,   ls_hi),
+        # Unpacking the 5 node specs
+        y0_spec   = ParamSpec(y_labels[0], y_lo, y_hi),
+        y1_spec   = ParamSpec(y_labels[1], y_lo, y_hi),
+        y2_spec   = ParamSpec(y_labels[2], y_lo, y_hi),
+        y3_spec   = ParamSpec(y_labels[3], y_lo, y_hi),
+        y4_spec   = ParamSpec(y_labels[4], y_lo, y_hi),
+    )
+
+def _gp2d_pairing(
+    beta_label=r"$\beta$", amp_label=r"$A_q$", 
+    ls_m_label=r"$l_{m,q}$", ls_q_label=r"$l_{q,q}$",
+    y_labels=[r"$y_{q,%d}$" % i for i in range(16)], # Updated to 16 labels
+    beta_lo=-4.0, beta_hi=12.0,
+    amp_lo=0.01, amp_hi=3.0,
+    ls_m_lo=0.5, ls_m_hi=3.0, # m1 correlation length (log space)
+    ls_q_lo=0.2, ls_q_hi=1.0, # q correlation length (linear space)
+    y_lo=-5.0, y_hi=5.0
+):
+    return GaussianProcessPairing2D(
+        beta_spec = ParamSpec(beta_label, beta_lo, beta_hi),
+        amp_spec  = ParamSpec(amp_label,  amp_lo,  amp_hi),
+        ls_m_spec = ParamSpec(ls_m_label, ls_m_lo, ls_m_hi),
+        ls_q_spec = ParamSpec(ls_q_label, ls_q_lo, ls_q_hi),
+        y0_spec   = ParamSpec(y_labels[0], y_lo, y_hi),
+        y1_spec   = ParamSpec(y_labels[1], y_lo, y_hi),
+        y2_spec   = ParamSpec(y_labels[2], y_lo, y_hi),
+        y3_spec   = ParamSpec(y_labels[3], y_lo, y_hi),
+        y4_spec   = ParamSpec(y_labels[4], y_lo, y_hi),
+        y5_spec   = ParamSpec(y_labels[5], y_lo, y_hi),
+        y6_spec   = ParamSpec(y_labels[6], y_lo, y_hi),
+        y7_spec   = ParamSpec(y_labels[7], y_lo, y_hi),
+        y8_spec   = ParamSpec(y_labels[8], y_lo, y_hi),
+        y9_spec   = ParamSpec(y_labels[9], y_lo, y_hi),
+        y10_spec  = ParamSpec(y_labels[10], y_lo, y_hi),
+        y11_spec  = ParamSpec(y_labels[11], y_lo, y_hi),
+        y12_spec  = ParamSpec(y_labels[12], y_lo, y_hi),
+        y13_spec  = ParamSpec(y_labels[13], y_lo, y_hi),
+        y14_spec  = ParamSpec(y_labels[14], y_lo, y_hi),
+        y15_spec  = ParamSpec(y_labels[15], y_lo, y_hi),
+    )
+
+
 # ----------------------------------------------------------------------
 # Mix Factories
 # ----------------------------------------------------------------------
@@ -852,6 +1052,25 @@ def _mixture_gp_experimental(shared_beta=True, shared_spin=True):
     return MixtureModel(masses, pairings, spins)
 
 
+def _mixture_gp_pairing_experimental(shared_beta=True, shared_spin=True):
+    # Since k=1, we enforce shared_beta and shared_spin
+    # 1D GP for primary mass, 1D GP for mass ratio
+    masses = [_gp_experimental()]
+    pairings = [_gp_pairing_experimental()]
+    spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
+    
+    return MixtureModel(masses, pairings, spins)
+
+
+def _mixture_gp_full2d(shared_beta=True, shared_spin=True):
+    # k=1 for a purely non-parametric mass & pairing model
+    masses = [_gp_experimental()]
+    pairings = [_gp2d_pairing()]
+    spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
+    
+    return MixtureModel(masses, pairings, spins)
+
+
 # ----------------------------------------------------------------------
 # 8. Registry and Parsers
 # ----------------------------------------------------------------------
@@ -870,6 +1089,8 @@ _RAW_MODELS = {
     "twopowerlaws+3peaks":             (_mixture_2pl3peaks,       "2PL+3G"),
     "gp":                              (_mixture_gp,              "GP"),
     "gp_experimental":                 (_mixture_gp_experimental, "GP EXP"),
+    "gp_pairing_experimental":         (_mixture_gp_pairing_experimental, "GPxGP EXP"),
+    "gp_2D_experimental":              (_mixture_gp_full2d,       "GP 2D")
 }
 
 # Construct the full registry dynamically handling all combinations

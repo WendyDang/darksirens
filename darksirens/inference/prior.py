@@ -89,7 +89,7 @@ def get_fixed_population_params(pop_model):
             3.0, 50.0, 100.0, 3.0, 10.0           # PL
         ]
         
-    if base_model == "gp":
+    elif base_model == "gp":
         n_comp = 1
         weights = []  # k=1 means no weight parameters (f_i)
         masses = [
@@ -98,8 +98,8 @@ def get_fixed_population_params(pop_model):
             5.0, 10.0,            # ls1, ls2 (Fiducial correlation lengths)
             42.0                  # n_seed (Fiducial PRNG seed)
         ]
-        
-    if base_model == "gp_experimental":
+
+    elif base_model == "gp_experimental":
         n_comp = 1
         weights = []  # k=1 means no weight parameters
         masses = [
@@ -111,11 +111,56 @@ def get_fixed_population_params(pop_model):
             0.0, 0.0, 0.0, 0.0 # y0, y1, y2, y3, y4 (Zero deviations = pure power-law initially)
         ]
         
+    elif base_model == "gp_pairing_experimental":
+        n_comp = 1
+        weights = []  # k=1 means no weight parameters
+        masses = [
+            5.0, 80.0, 3.0, 10.0, # m_min, m_max, dm_min, dm_max
+            2.3,                  # alpha (Fiducial power-law slope resembling GWTC-3)
+            1.0, 1.0,             # amp_m, ls_m (Fiducial kernel variance and length scale)
+            0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0                   # y0-y10 (Zero deviations = pure power-law initially)
+        ]
+
+    elif base_model == "gp_2D_experimental":
+        n_comp = 1
+        weights = []  # k=1 means no weight parameters
+        masses = [
+            5.0, 80.0, 3.0, 10.0, # m_min, m_max, dm_min, dm_max
+            2.3,                  # alpha (Fiducial power-law slope resembling GWTC-3)
+            1.0, 1.0,             # amp, ls (Fiducial kernel variance and length scale)
+            0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0    # y0-y13 (Zero deviations = pure power-law initially)
+        ]
+
     else:
         raise ValueError(f"No fixed parameters defined for model '{pop_model}'")
+        
+    # Assuming you have an if/elif chain for betas below the masses:
+    
+    if base_model == "gp_pairing_experimental":
+        betas = [
+            1.5,                  # beta_q (Fiducial slope favoring equal mass)
+            1.0, 0.5,             # amp_q, ls_q (ls=0.5 covers half the (0,1] domain)
+            0.0, 0.0, 0.0, 0.0, 0.0 # y_q0 - y_q4 (Zero deviations = pure q^beta initially)
+        ]
+    elif base_model == "gp_2D_experimental":
+        betas = [
+            0.0,           # beta (baseline flat mass ratio preference)
+            1.0,           # amp_q (amplitude of GP deviations)
+            1.0, 0.5,      # ls_m, ls_q (correlation lengths for m1 and q)
+            # 16 nodes for the 4x4 grid
+            0.0, 0.0, 0.0, 0.0, # y0 - y3
+            0.0, 0.0, 0.0, 0.0, # y4 - y7
+            0.0, 0.0, 0.0, 0.0, # y8 - y11
+            0.0, 0.0, 0.0, 0.0  # y12 - y15
+        ]
 
-    # 3. Define Pairing (Beta) Parameters
-    betas = [1.0] if shared_beta else [1.0] * n_comp
+    else:
+        # 3. Define Pairing (Beta) Parameters
+        betas = [1.0] if shared_beta else [1.0] * n_comp
     
     # 4. Define Spin Parameters (mu_chi=0.0, sigma_chi=0.1)
     spins = [0.0, 0.1] if shared_spin else [0.0, 0.1] * n_comp

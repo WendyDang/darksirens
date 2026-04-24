@@ -242,8 +242,8 @@ def main():
         # Generate corner plot
         print(f"[*] Generating corner plot...")
         samples = results["samples"]
-        fig = make_production_corner(samples, labels)
-        fig.savefig(os.path.join(run_dir, "corner.pdf"), bbox_inches='tight', dpi=200)
+        #fig = make_production_corner(samples, labels)
+        #fig.savefig(os.path.join(run_dir, "corner.pdf"), bbox_inches='tight', dpi=200)
 
         print(f"[*] SUCCESS: Run complete.")
     else:
