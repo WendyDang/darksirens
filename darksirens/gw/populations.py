@@ -9,9 +9,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List
 
+import jax
 import jax.numpy as jnp
 from jax import jit
 
+import tinygp
+from tinygp import GaussianProcess, kernels
 
 # ======================================================================
 # 0. Fixed grids
@@ -176,6 +179,142 @@ class Gaussian(MassComponent):
         mu, sig = t[0], t[1]
         return jnp.exp(-0.5 * ((m - mu) / sig) ** 2)
 
+
+@dataclass
+class GaussianProcessMass(MassComponent):
+    m_min_spec: ParamSpec
+    m_max_spec: ParamSpec
+    dm_min_spec: ParamSpec
+    dm_max_spec: ParamSpec
+    amp1_spec: ParamSpec
+    amp2_spec: ParamSpec
+    ls1_spec: ParamSpec
+    ls2_spec: ParamSpec
+    n_spec: ParamSpec
+
+    @property
+    def param_specs(self):
+        return [
+            self.m_min_spec,
+            self.m_max_spec,
+            self.dm_min_spec,
+            self.dm_max_spec,
+            self.amp1_spec,
+            self.amp2_spec,
+            self.ls1_spec,
+            self.ls2_spec,
+            self.n_spec,
+        ]
+
+    def _eval_unnorm(self, m, t):
+        mmin, mmax, dmmin, dmmax = t[0], t[1], t[2], t[3]
+        amp1, amp2, ls1, ls2, n = t[4], t[5], t[6], t[7], t[8]
+
+        # Deterministic key from theta parameter
+        key = jax.random.PRNGKey(n.astype(jnp.int32))
+
+        # Build Kernel
+        kernel_1 = (amp1**2) * kernels.ExpSquared(scale=ls1)
+        kernel_2 = (amp2**2) * kernels.Matern52(scale=ls2)
+        kernel = kernel_1 + kernel_2 
+        
+        # Instantiate and sample GP directly on MASS_GRID
+        gp = GaussianProcess(kernel=kernel, X=MASS_GRID, mean=0.0, diag=0.001)
+        logpm_grid = gp.sample(key, shape=())
+        
+        # Apply smoothing filters on the grid
+        S_grid = sfilter_low(MASS_GRID, mmin, dmmin) * sfilter_high(MASS_GRID, mmax, dmmax)
+        pm_grid = S_grid * jnp.exp(logpm_grid)
+        
+        # Interpolate the fixed grid evaluation to the requested m array
+        return jnp.interp(m, MASS_GRID, pm_grid, left=0.0, right=0.0)
+    
+
+@dataclass
+class GaussianProcessMassExp(MassComponent):
+    m_min_spec: ParamSpec
+    m_max_spec: ParamSpec
+    dm_min_spec: ParamSpec
+    dm_max_spec: ParamSpec
+    alpha_spec: ParamSpec
+    amp_spec: ParamSpec
+    ls_spec: ParamSpec
+    # 11 Latent nodes for high-resolution mass features
+    y0_spec: ParamSpec
+    y1_spec: ParamSpec
+    y2_spec: ParamSpec
+    y3_spec: ParamSpec
+    y4_spec: ParamSpec
+    y5_spec: ParamSpec
+    y6_spec: ParamSpec
+    y7_spec: ParamSpec
+    y8_spec: ParamSpec
+    y9_spec: ParamSpec
+    y10_spec: ParamSpec
+
+    @property
+    def param_specs(self):
+        return [
+            self.m_min_spec,
+            self.m_max_spec,
+            self.dm_min_spec,
+            self.dm_max_spec,
+            self.alpha_spec,
+            self.amp_spec,
+            self.ls_spec,
+            self.y0_spec,
+            self.y1_spec,
+            self.y2_spec,
+            self.y3_spec,
+            self.y4_spec,
+            self.y5_spec,
+            self.y6_spec,
+            self.y7_spec,
+            self.y8_spec,
+            self.y9_spec,
+            self.y10_spec,
+        ]
+
+    def _eval_unnorm(self, m, t):
+        """
+        Evaluates the unnormalized primary mass distribution.
+        t: array of parameters ordered according to param_specs.
+        """
+        # 1. Unpack smoothing and hyper-parameters
+        mmin, mmax, dmmin, dmmax = t[0], t[1], t[2], t[3]
+        alpha, amp, ls = t[4], t[5], t[6]
+        
+        # 2. Extract the 11 latent nodes (y0 through y10)
+        y_nodes = jnp.array(t[7:18]) 
+
+        # 3. Setup Log-Space Grid and Nodes
+        # We perform the GP math in log-space for fractional stationarity
+        log_MASS_GRID = jnp.log(MASS_GRID)
+        log_nodes = jnp.linspace(jnp.log(2.0), jnp.log(100.0), 11)
+
+        # 4. Define Mean and Kernel
+        # The mean function anchors the GP to a baseline power-law
+        def mean_fn(x):
+            return -alpha * x
+
+        # Matern-5/2 is twice-differentiable; ideal for "smoothly bumpy" mass functions
+        kernel = (amp**2) * kernels.Matern52(scale=ls)
+
+        # 5. Build GP Prior and Condition on the Latent Nodes
+        # diag=1e-5 ensures numerical stability during the Cholesky decomposition
+        gp_prior = GaussianProcess(kernel=kernel, X=log_nodes, mean=mean_fn, diag=1e-5)
+        _, gp_cond = gp_prior.condition(y_nodes, log_MASS_GRID)
+        
+        # This is our log-probability density across the fixed MASS_GRID
+        logpm_grid = gp_cond.loc
+
+        # 6. Apply smoothing filters (Low-mass and High-mass cutoffs)
+        S_grid = sfilter_low(MASS_GRID, mmin, dmmin) * sfilter_high(MASS_GRID, mmax, dmmax)
+        pm_grid = S_grid * jnp.exp(logpm_grid)
+
+        # 7. Interpolate the grid-calculated density to the specific requested m-values
+        return jnp.interp(m, MASS_GRID, pm_grid, left=0.0, right=0.0)
+    
 
 # ======================================================================
 # 4. Pairing models (normalized on Q_GRID | m1)
@@ -486,6 +625,73 @@ def _spin(
     )
 
 
+def _gp(
+    mmin_label=r"$m_{\min}$", mmax_label=r"$m_{\max}$",
+    dmmin_label=r"$dm_{\min}$", dmmax_label=r"$dm_{\max}$",
+    amp1_label=r"$A_1$", amp2_label=r"$A_2$",
+    ls1_label=r"$l_1$", ls2_label=r"$l_2$",
+    n_label=r"$n_{\rm seed}$", # Label clearly for the corner plot
+    mmin_lo=2.0, mmin_hi=10.0,
+    mmax_lo=50.0, mmax_hi=100.0,
+    dmmin_lo=0.01, dmmin_hi=10.0,
+    dmmax_lo=0.01, dmmax_hi=20.0,
+    amp_lo=0.1, amp_hi=5.0,
+    ls_lo=1.0, ls_hi=20.0,
+    n_lo=0.0, n_hi=1e6 # Bounded range for the PRNG seed
+):
+    return GaussianProcessMass(
+        m_min_spec  = ParamSpec(mmin_label,  mmin_lo,  mmin_hi),
+        m_max_spec  = ParamSpec(mmax_label,  mmax_lo,  mmax_hi),
+        dm_min_spec = ParamSpec(dmmin_label, dmmin_lo, dmmin_hi),
+        dm_max_spec = ParamSpec(dmmax_label, dmmax_lo, dmmax_hi),
+        amp1_spec   = ParamSpec(amp1_label,  amp_lo,   amp_hi),
+        amp2_spec   = ParamSpec(amp2_label,  amp_lo,   amp_hi),
+        ls1_spec    = ParamSpec(ls1_label,   ls_lo,    ls_hi),
+        ls2_spec    = ParamSpec(ls2_label,   ls_lo,    ls_hi),
+        n_spec      = ParamSpec(n_label,     n_lo,     n_hi),
+    )
+
+
+def _gp_experimental(
+    mmin_label=r"$m_{\min}$", mmax_label=r"$m_{\max}$",
+    dmmin_label=r"$\delta m_{\min}$", dmmax_label=r"$\delta m_{\max}$",
+    alpha_label=r"$\alpha$", amp_label=r"$A$", ls_label=r"$l$",
+    # 11 Latent Node Labels
+    y_labels=[r"$y_{%d}$" % i for i in range(11)],
+    
+    # Smoothing & Baseline Bounds
+    mmin_lo=2.0, mmin_hi=10.0,
+    mmax_lo=50.0, mmax_hi=100.0,
+    dmmin_lo=0.01, dmmin_hi=10.0,
+    dmmax_lo=0.01, dmmax_hi=20.0,
+    alpha_lo=-4.0, alpha_hi=12.0, 
+    
+    # Updated Hyperparameter Bounds
+    amp_lo=0.01, amp_hi=5.0,
+    ls_lo=0.05, ls_hi=1.0,  # Tightened: prevents features from being forced too wide
+    y_lo=-7.0, y_hi=7.0     # Generous vertical range for log-density deviations
+):
+    return GaussianProcessMassExp(
+        m_min_spec  = ParamSpec(mmin_label,  mmin_lo,  mmin_hi),
+        m_max_spec  = ParamSpec(mmax_label,  mmax_lo,  mmax_hi),
+        dm_min_spec = ParamSpec(dmmin_label, dmmin_lo, dmmin_hi),
+        dm_max_spec = ParamSpec(dmmax_label, dmmax_lo, dmmax_hi),
+        alpha_spec  = ParamSpec(alpha_label, alpha_lo, alpha_hi),
+        amp_spec    = ParamSpec(amp_label,   amp_lo,   amp_hi),
+        ls_spec     = ParamSpec(ls_label,    ls_lo,    ls_hi),
+        # Unpacking the 11 node specs
+        y0_spec     = ParamSpec(y_labels[0],  y_lo, y_hi),
+        y1_spec     = ParamSpec(y_labels[1],  y_lo, y_hi),
+        y2_spec     = ParamSpec(y_labels[2],  y_lo, y_hi),
+        y3_spec     = ParamSpec(y_labels[3],  y_lo, y_hi),
+        y4_spec     = ParamSpec(y_labels[4],  y_lo, y_hi),
+        y5_spec     = ParamSpec(y_labels[5],  y_lo, y_hi),
+        y6_spec     = ParamSpec(y_labels[6],  y_lo, y_hi),
+        y7_spec     = ParamSpec(y_labels[7],  y_lo, y_hi),
+        y8_spec     = ParamSpec(y_labels[8],  y_lo, y_hi),
+        y9_spec     = ParamSpec(y_labels[9],  y_lo, y_hi),
+        y10_spec    = ParamSpec(y_labels[10], y_lo, y_hi),
+    )
 # ----------------------------------------------------------------------
 # Mix Factories
 # ----------------------------------------------------------------------
@@ -629,6 +835,23 @@ def _mixture_bpl2peaks1pl(shared_beta=False, shared_spin=False):
     return MixtureModel(masses, pairings, spins)
 
 
+def _mixture_gp(shared_beta=True, shared_spin=True):
+    # Since k=1, we enforce shared_beta and shared_spin
+    masses = [_gp()]
+    pairings = [_plpairing(beta_label=r"$\beta$")]
+    spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
+    
+    return MixtureModel(masses, pairings, spins)
+
+def _mixture_gp_experimental(shared_beta=True, shared_spin=True):
+    # Since k=1, we enforce shared_beta and shared_spin
+    masses = [_gp_experimental()]
+    pairings = [_plpairing(beta_label=r"$\beta$")]
+    spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
+    
+    return MixtureModel(masses, pairings, spins)
+
+
 # ----------------------------------------------------------------------
 # 8. Registry and Parsers
 # ----------------------------------------------------------------------
@@ -638,13 +861,15 @@ def _make(mix_fn, shared_beta=False, shared_spin=False):
 
 
 _RAW_MODELS = {
-    "powerlaw+peak":                   (_mixture_plpeak,        "PL+G"),
-    "brokenpowerlaw+2peaks":           (_mixture_bpl2peaks,     "BPL+2G"),
-    "brokenpowerlaw+3peaks":           (_mixture_bpl3peaks,     "BPL+3G"),
-    "brokenpowerlaw+2peaks+powerlaw":  (_mixture_bpl2peaks1pl,  "BPL+2G+PL"),
-    "twopowerlaws+peak":               (_mixture_2pl1peak,      "2PL+G"),
-    "twopowerlaws+2peaks":             (_mixture_2pl2peaks,     "2PL+2G"),
-    "twopowerlaws+3peaks":             (_mixture_2pl3peaks,     "2PL+3G"),
+    "powerlaw+peak":                   (_mixture_plpeak,          "PL+G"),
+    "brokenpowerlaw+2peaks":           (_mixture_bpl2peaks,       "BPL+2G"),
+    "brokenpowerlaw+3peaks":           (_mixture_bpl3peaks,       "BPL+3G"),
+    "brokenpowerlaw+2peaks+powerlaw":  (_mixture_bpl2peaks1pl,    "BPL+2G+PL"),
+    "twopowerlaws+peak":               (_mixture_2pl1peak,        "2PL+G"),
+    "twopowerlaws+2peaks":             (_mixture_2pl2peaks,       "2PL+2G"),
+    "twopowerlaws+3peaks":             (_mixture_2pl3peaks,       "2PL+3G"),
+    "gp":                              (_mixture_gp,              "GP"),
+    "gp_experimental":                 (_mixture_gp_experimental, "GP EXP"),
 }
 
 # Construct the full registry dynamically handling all combinations

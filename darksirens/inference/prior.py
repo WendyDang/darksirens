@@ -89,6 +89,28 @@ def get_fixed_population_params(pop_model):
             3.0, 50.0, 100.0, 3.0, 10.0           # PL
         ]
         
+    if base_model == "gp":
+        n_comp = 1
+        weights = []  # k=1 means no weight parameters (f_i)
+        masses = [
+            5.0, 80.0, 3.0, 10.0, # m_min, m_max, dm_min, dm_max
+            1.0, 1.0,             # amp1, amp2 (Fiducial amplitudes)
+            5.0, 10.0,            # ls1, ls2 (Fiducial correlation lengths)
+            42.0                  # n_seed (Fiducial PRNG seed)
+        ]
+        
+    if base_model == "gp_experimental":
+        n_comp = 1
+        weights = []  # k=1 means no weight parameters
+        masses = [
+            5.0, 80.0, 3.0, 10.0, # m_min, m_max, dm_min, dm_max
+            2.3,                  # alpha (Fiducial power-law slope resembling GWTC-3)
+            1.0, 1.0,             # amp, ls (Fiducial kernel variance and length scale)
+            0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 
+            0.0, 0.0, 0.0, 0.0 # y0, y1, y2, y3, y4 (Zero deviations = pure power-law initially)
+        ]
+        
     else:
         raise ValueError(f"No fixed parameters defined for model '{pop_model}'")
 
