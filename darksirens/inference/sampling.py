@@ -90,7 +90,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
             nlive=opts.nlive
         )
         
-        sampler.run_nested(dlogz=0.1)
+        sampler.run_nested(dlogz=opts.dlogz)
         res = sampler.results
 
         # Posterior samples

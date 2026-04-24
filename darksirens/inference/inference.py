@@ -105,6 +105,7 @@ def main():
     optp.add_argument("--jaxns", type=str_to_bool, default=False)
 
     optp.add_argument("--nlive", type=int, default=1000)
+    optp.add_argument("--dlogz", type=float, default=0.1)
     optp.add_argument("--nwalkers", type=int, default=32)
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
@@ -183,9 +184,13 @@ def main():
     # --------------------------------------------------------
     # Choose sampler
     # --------------------------------------------------------
-    if opts.jaxns: method = "jaxns"
-    elif opts.dynesty: method = "dynesty"
-    elif opts.emcee: method = "emcee"
+    if opts.jaxns: 
+        method = "jaxns"
+    elif opts.dynesty: 
+        method = "dynesty"
+        print(opts.dlogz)
+    elif opts.emcee:
+        method = "emcee"
     else:
         print("[!] No sampler selected. Please use --jaxns, --dynesty, or --emcee.")
         return
