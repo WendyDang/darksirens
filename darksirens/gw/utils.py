@@ -33,6 +33,7 @@ from gwdistributions.distributions.spin import IsotropicUniformMagnitudeChiEffGi
 import warnings
 warnings.filterwarnings("ignore", message="invalid value encountered in log")
 warnings.filterwarnings("ignore", message="invalid value encountered in arctanh")
+warnings.filterwarnings("ignore", message="divide by zero encountered in log")
 
 spin_prior = IsotropicUniformMagnitudeChiEffGivenComponentMass()
 spin_prior._init_values(max_spin_magnitude=0.99)
