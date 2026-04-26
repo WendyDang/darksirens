@@ -68,7 +68,7 @@ def load_gw_samples(gw_path, nsamp=64):
         m2det  = np.array(f["m2det"])
         dL     = np.array(f["dL"]) * u.Mpc
         dL     = dL.value  # convert to float Mpc
-        chieff = np.array(f["chieff"])
+        chieff = np.array(f["chieff"]) if "chieff" in f else np.zeros(dL.shape)
 
         # Optional PE weights
         p_pe = np.array(f["p_pe"]) if "p_pe" in f else None
