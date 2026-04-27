@@ -18,8 +18,11 @@ survey_params_fid = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
 @partial(
     jax.jit,
     static_argnames=[
-        "nEvents", "Ndraw", "nsamp", "apix",
-        "pop_model", "universe_model"
+        "nEvents",
+        "nsamp",
+        "pop_model",
+        "universe_model",
+        "ignore_completeness",
     ],
 )
 def darksiren_log_likelihood(
@@ -32,9 +35,14 @@ def darksiren_log_likelihood(
     pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
     nEvents, nsamp, Ndraw, apix,
     pop_model, universe_model,
-    delta_g_pix_z
+    delta_g_pix_z,
+    ignore_completeness=False,
 ):
     log_p_pop = pop_model_parser(pop_model=pop_model)
+    if ignore_completeness and universe_model == "dark_sirens":
+        universe_model = "dark_sirens_complete_catalog"
+    elif ignore_completeness and universe_model != "dark_sirens":
+        raise ImplementationError("ignore_completeness=True is only implemented for universe_model='dark_sirens'.")
     raw_logPriorUniverse = universe_model_parser(universe_model=universe_model)
 
     def logPriorUniverse_safe(z, pix,
@@ -98,10 +106,10 @@ def darksiren_log_likelihood(
     log_weights = log_weights.reshape((nEvents, nsamp))
     ll += jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights, axis=-1))
 
-    return jnp.nan_to_num(ll, nan=-jnp.inf)
+    return jnp.where(jnp.isfinite(ll), ll, -jnp.inf)
 
 
-def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
+def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_values=None):
     """
     Enhanced wrapper that converts None values into dummy JAX arrays 
     to ensure compatibility with JIT.
@@ -123,6 +131,7 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     
     nEvents, nsamp, Ndraw, apix = data["nEvents"], opts.nsamp, data["Ndraw"], data["apix"]
     pop_model, universe_model = opts.pop_model, opts.universe_model
+    ignore_completeness = opts.ignore_completeness
 
     # Convert survey-optional data to JAX arrays (even if empty/dummy)
     zgals_pe = to_jax("zgals_pe")
@@ -132,32 +141,81 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     dzgals_sel = to_jax("dzgals_sel")
     wgals_sel = to_jax("wgals_sel")
 
-    # Get active parameter counts
+    if fixed_parameter_values is None:
+        fixed_parameter_values = {}
+
+    # Get parameter labels for robust, label-aware unpacking.
     _, _, pop_labels, _ = pop_model_prior_parser(pop_model)
-    true_n_pop = len(pop_labels)
+    cosmo_labels = ["H0", "Om0"]
+    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
+
+    expected_labels = []
+    if not opts.fix_cosmology:
+        expected_labels.extend(cosmo_labels)
+    if not opts.fix_population:
+        expected_labels.extend(pop_labels)
+    if not opts.fix_survey:
+        expected_labels.extend(survey_labels)
+
+    expected_set = set(expected_labels)
+    fixed_inside_sampled = {k: float(v) for k, v in fixed_parameter_values.items() if k in expected_set}
 
     def likelihood(coord):
         coord = jnp.asarray(coord)
+        sampled_values = {}
         offset = 0
 
+        for label in expected_labels:
+            if label in fixed_inside_sampled:
+                sampled_values[label] = fixed_inside_sampled[label]
+                continue
+            if offset >= coord.shape[0]:
+                raise ValueError(
+                    f"Likelihood received too few coordinates: expected at least {offset + 1}, got {coord.shape[0]}."
+                )
+            sampled_values[label] = coord[offset]
+            offset += 1
+
+        if offset != coord.shape[0]:
+            raise ValueError(
+                f"Likelihood received too many coordinates: consumed {offset}, got {coord.shape[0]}."
+            )
+
+        def _resolved_value(label, default):
+            if label in sampled_values:
+                return sampled_values[label]
+            if label in fixed_parameter_values:
+                return fixed_parameter_values[label]
+            return default
+
         if opts.fix_cosmology:
-            H0, Om0 = H0_fid, Om0_fid
+            H0 = _resolved_value("H0", H0_fid)
+            Om0 = _resolved_value("Om0", Om0_fid)
         else:
-            H0, Om0 = coord[offset:offset+2]
-            offset += 2
+            H0 = sampled_values["H0"]
+            Om0 = sampled_values["Om0"]
 
         if opts.fix_population:
-            pop_params = pop_params_fid
+            pop_params = jnp.asarray([
+                _resolved_value(label, pop_params_fid[i])
+                for i, label in enumerate(pop_labels)
+            ])
         else:
-            pop_params = coord[offset:offset+true_n_pop]
-            offset += true_n_pop
+            pop_params = jnp.asarray([
+                _resolved_value(label, sampled_values[label])
+                for label in pop_labels
+            ])
 
         if opts.fix_survey:
-            survey_params = survey_params_fid
+            survey_params = jnp.asarray([
+                _resolved_value(label, survey_params_fid[i])
+                for i, label in enumerate(survey_labels)
+            ])
         else:
-            n_survey = len(survey_params_fid)
-            survey_params = coord[offset:offset+n_survey]
-            offset += n_survey
+            survey_params = jnp.asarray([
+                _resolved_value(label, sampled_values[label])
+                for label in survey_labels
+            ])
 
         return darksiren_log_likelihood(
             (H0, Om0),
@@ -169,7 +227,8 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
             pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
             nEvents, nsamp, Ndraw, apix,
             pop_model, universe_model,
-            delta_g_pix_z
+            delta_g_pix_z,
+            ignore_completeness=ignore_completeness,
         )
 
     return likelihood

@@ -54,7 +54,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
             model=model,
             num_live_points=opts.nlive,
             max_samples=opts.max_samples,
-            verbose=True,
+            verbose=opts.show_progress,
         )
 
         key = jax.random.PRNGKey(opts.seed)
@@ -90,7 +90,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
             nlive=opts.nlive
         )
         
-        sampler.run_nested(dlogz=opts.dlogz)
+        sampler.run_nested(dlogz=opts.dlogz, print_progress=opts.show_progress)
         res = sampler.results
 
         # Posterior samples
@@ -112,8 +112,13 @@ def run_sampler(method, likelihood, prior_transform, labels,
     # --------------------------------------------------------
     elif method == "emcee":
         import emcee
+        import h5py
+        import os
+        import time
+        from pathlib import Path
 
-        # Vectorize and JIT the likelihood for the GPU
+        # JIT the likelihood for fast single-point evaluation and batch it when possible.
+        fast_likelihood = jax.jit(likelihood)
         batched_likelihood = jax.jit(jax.vmap(likelihood))
 
         # --- NEW: Define a safe batch size to prevent GPU OOM ---
@@ -122,6 +127,16 @@ def run_sampler(method, likelihood, prior_transform, labels,
         BATCH_SIZE = 32
 
         def batched_log_prob(coords):
+            coords = np.asarray(coords)
+
+            # emcee calls the log-probability on a single walker at a time unless vectorization is enabled.
+            if coords.ndim == 1:
+                if np.any((coords < lower_bound) | (coords > upper_bound)):
+                    return -np.inf
+                return float(np.asarray(fast_likelihood(coords)))
+            if coords.ndim != 2:
+                raise ValueError(f"Expected emcee coordinates with ndim 1 or 2, got shape {coords.shape}.")
+
             # 1. Find which walkers are out of bounds (boolean mask)
             out_of_bounds = np.any((coords < lower_bound) | (coords > upper_bound), axis=1)
             
@@ -141,16 +156,64 @@ def run_sampler(method, likelihood, prior_transform, labels,
         p0 = np.random.uniform(lower_bound, upper_bound,
                                size=(opts.nwalkers, ndims))
 
+        # Set up checkpointing via emcee backend
+        checkpoint_dir = Path(opts.output_path) / "emcee_checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # Auto-isolate checkpoint files per run so concurrent jobs do not contend for one HDF5 lock.
+        job_tag = os.environ.get("SLURM_JOB_ID")
+        if not job_tag:
+            job_tag = f"{int(time.time())}_{os.getpid()}"
+        backend_filename = checkpoint_dir / f"chain_{job_tag}.h5"
+        
+        backend = emcee.backends.HDFBackend(str(backend_filename))
+        backend.reset(opts.nwalkers, ndims)
+
+        def finalize_backend() -> None:
+            sync = getattr(backend, "sync", None)
+            if callable(sync):
+                sync()
+                return
+
+            flush = getattr(backend, "flush", None)
+            if callable(flush):
+                flush()
+
         sampler = emcee.EnsembleSampler(
-            opts.nwalkers, 
-            ndims, 
-            batched_log_prob,
-            vectorize=True,  # Keep this True! We are handling the vectorization internally now.
+            opts.nwalkers, ndims, batched_log_prob,
+            backend=backend,
             moves=[(emcee.moves.DEMove(), 0.8),
                    (emcee.moves.DESnookerMove(), 0.2)]
         )
-        sampler.run_mcmc(p0, opts.nsteps, progress=True)
-
+        
+        # Run with periodic checkpointing (save every hour or every 10,000 steps, whichever is first)
+        checkpoint_interval = 10_000  # steps
+        last_checkpoint_time = time.time()
+        checkpoint_time_interval = 3600  # seconds (1 hour)
+        
+        print(f"Starting emcee run: nwalkers={opts.nwalkers}, nsteps={opts.nsteps}", flush=True)
+        print(f"Checkpoints will be saved to: {backend_filename}", flush=True)
+        
+        for i in range(0, opts.nsteps, checkpoint_interval):
+            n_steps = min(checkpoint_interval, opts.nsteps - i)
+            sampler.run_mcmc(p0, n_steps, progress=opts.show_progress)
+            p0 = sampler.get_last_sample()
+            
+            current_time = time.time()
+            elapsed_since_checkpoint = current_time - last_checkpoint_time
+            
+            # Log progress
+            print(f"Completed step {i + n_steps}/{opts.nsteps} ({100*(i+n_steps)/opts.nsteps:.1f}%) - "
+                  f"Elapsed: {elapsed_since_checkpoint:.1f}s", flush=True)
+            
+            if elapsed_since_checkpoint >= checkpoint_time_interval:
+                finalize_backend()
+                print(f"Checkpoint saved at step {i + n_steps}", flush=True)
+                last_checkpoint_time = current_time
+        
+        # Final sync to ensure all data is saved
+        finalize_backend()
+        print(f"Sampling complete. Final checkpoint saved to: {backend_filename}", flush=True)
+        
         chain = sampler.flatchain
         samples = chain[len(chain)//2:]
 

@@ -29,7 +29,7 @@ Ngals_lessthanz_vmap = jit(
     vmap(Ngals_lessthanz, in_axes=(0, None, None), out_axes=0)
 )
 
-@partial(jit, static_argnames=['apix'])
+@jit
 def Ngals_expected_lessthanz(z, H0, Om0, n0, delta, apix):
     dN = n0 * apix * dV_of_z(zgrid, H0, Om0) * (1 + zgrid)**(delta - 1)
     dN = jnp.where(zgrid < z, dN, 0.0)
@@ -84,7 +84,7 @@ def Pcomplete0(z, z50, w):
 # ------------------------------------------------------------
 # LSS completeness (unified: alpha=0 → isotropic)
 # ------------------------------------------------------------
-@partial(jit, static_argnames=['apix'])
+@jit
 def completeness_fraction(H0, Om0, n0, z50, w, delta,
                           z, pix, apix, zgals,
                           delta_g_pix_z, b_miss, alpha):
@@ -163,7 +163,7 @@ logpcatalog_vmap = jit(
 # ------------------------------------------------------------
 # Universe prior (unified)
 # ------------------------------------------------------------
-@partial(jit, static_argnames=['apix'])
+@jit
 def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
                      delta, apix,
                      zgals, dzgals, wgals,
@@ -193,11 +193,28 @@ def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
 
     return log_mix - 1.0 * jnp.log1p(z)
 
+@jit
+def logPriorUniverse_complete_catalog(z, pix, H0, Om0, n0, z50, w,
+                                        delta, apix, zgals, dzgals, wgals,
+                                        delta_g_pix_z, b_miss, alpha):
+        """
+        Dark-siren prior under the complete-catalog assumption:
+            p(z|pix) = p_cat(z|pix)
 
-@partial(jit, static_argnames=['apix'])
+        This removes completeness-correction terms while retaining catalog-conditioned
+        inference and the usual selection normalization structure in the likelihood.
+        """
+        logpcat = jnp.nan_to_num(
+                logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals),
+                neginf=-jnp.inf
+        )
+        return logpcat - 1.0 * jnp.log1p(z)
+
+
+@jit
 def logPriorUniverse_spectralsirens_from_dark(z, pix, H0, Om0, n0, z50, w,
-                                              delta, apix, zgals, dzgals, wgals,
-                                              delta_g_pix_z, b_miss, alpha):
+                                    delta, apix, zgals, dzgals, wgals,
+                                    delta_g_pix_z, b_miss, alpha):
     """
     Same structure, but with f=0 (no catalog term in the mixture).
     """
@@ -225,10 +242,10 @@ def logPriorUniverse_spectralsirens_from_dark(z, pix, H0, Om0, n0, z50, w,
     return log_mix - 1.0 * jnp.log1p(z)
 
 
-@partial(jit, static_argnames=['apix'])
+@jit
 def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
-                                    delta, apix, zgals, dzgals, wgals,
-                                    delta_g_pix_z, b_miss, alpha):
+                                         delta, apix, zgals, dzgals, wgals,
+                                         delta_g_pix_z, b_miss, alpha):
     """
     Pure volume + evolution prior (no catalog, no completeness).
     """
@@ -237,14 +254,17 @@ def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
     logpvol = jnp.log(pvol)
     return jnp.interp(z, zgrid, logpvol)
 
-
 def universe_model_parser(universe_model='dark_sirens'):
     if universe_model == 'dark_sirens':
         logp = logPriorUniverse
+    elif universe_model == 'dark_sirens_complete_catalog':
+        logp = logPriorUniverse_complete_catalog
     elif universe_model == 'spectral_sirens':
         logp = logPriorUniverse_spectralsirens
     elif universe_model == 'spectral_sirens_from_dark':
         logp = logPriorUniverse_spectralsirens_from_dark
+    elif universe_model == 'spectral_sirens_fast':
+        logp = logPriorUniverse_spectralsirens_fast
     else:
         raise ValueError(f"Unknown universe_model: {universe_model}")
     return logp
