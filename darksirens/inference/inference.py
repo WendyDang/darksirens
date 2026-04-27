@@ -18,25 +18,27 @@ import sys
 
 from argparse import ArgumentParser
 
-from darksirens.utils.cosmology import *
-from darksirens.utils.utils import *
-from darksirens.utils.plotting import make_production_corner
-from darksirens.inference.likelihood import darksiren_log_likelihood
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
+from darksirens.gw.populations import get_fixed_population_params
+
 from darksirens.em.utils import load_survey
 from darksirens.em.completeness import ( 
     zgrid, Ngals_lessthanz_grid_vmap, overdensity_from_counts,
     compute_LSS_overdensity,
 )
 
+from darksirens.inference.likelihood import darksiren_log_likelihood
 from darksirens.inference.data import load_all_data
 from darksirens.inference.likelihood import make_likelihood
 from darksirens.inference.sampling import run_sampler
 from darksirens.inference.prior import (
     build_parameter_space,
-    get_fixed_population_params,
     make_prior_transform,
 )
+
+from darksirens.utils.cosmology import *
+from darksirens.utils.utils import *
+from darksirens.utils.plotting import make_production_corner
 
 # Configuration
 jax.config.update("jax_enable_x64", True)

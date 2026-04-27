@@ -1,4 +1,14 @@
 # populations/__init__.py
-from .registry import pop_model_parser, pop_model_prior_parser, get_model
+from .registry import (
+    get_model, 
+    pop_model_parser, 
+    pop_model_prior_parser, 
+    get_fixed_population_params
+)
 
-__all__ = ["pop_model_parser", "pop_model_prior_parser", "get_model"]
+__all__ = [
+    "get_model", 
+    "pop_model_parser", 
+    "pop_model_prior_parser", 
+    "get_fixed_population_params"
+]
