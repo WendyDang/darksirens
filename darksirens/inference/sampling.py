@@ -93,8 +93,17 @@ def run_sampler(method, likelihood, prior_transform, labels,
         sampler.run_nested(dlogz=opts.dlogz, print_progress=opts.show_progress)
         res = sampler.results
 
-        # Posterior samples
-        weights = np.exp(res["logwt"] - res["logz"][-1])
+        # Weighted posterior samples
+        logw = np.asarray(res["logwt"], dtype=float)
+        finite_logw = logw[np.isfinite(logw)]
+        if finite_logw.size == 0:
+            raise RuntimeError("dynesty returned no finite posterior weights.")
+        # Normalize weights in log-space
+        weights = np.exp(logw - np.max(finite_logw))
+        weight_sum = float(np.sum(weights))
+        if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+            raise RuntimeError("dynesty posterior weights could not be normalized.")
+        weights /= weight_sum
         samples = resample_equal(res.samples, weights)
 
         # Evidence
