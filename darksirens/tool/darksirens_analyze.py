@@ -10,7 +10,7 @@ from tqdm import tqdm
 import jax
 import jax.numpy as jnp
 
-from darksirens.gw.populations import pop_model_parser
+from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser, get_fixed_population_params
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -100,11 +100,9 @@ def print_bayes_factors(labels, logZs):
 
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
-import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 10), 
-                                     cmap_name="coolwarm"):
+def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 10), cmap_name="coolwarm"):
     n = len(labels)
     # Use layout=None and we will handle the colorbar axis manually
     fig, axes = plt.subplots(n, n, figsize=figsize)
@@ -137,7 +135,8 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
                 ax.set_facecolor("lightgray")
                 ax.text(0.5, 0.5, "—", ha="center", va="center", fontsize=12)
 
-            ax.set_xticks([]); ax.set_yticks([])
+            ax.set_xticks([])
+            ax.set_yticks([])
 
     # --- THE FIX ---
     # 1. Create a "divider" based on the last column of axes
@@ -162,11 +161,78 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
 
     return fig
 
+# ------------------------------------------------------------
+# Parameter Unpacking Engine for Post-Processing
+# ------------------------------------------------------------
+def build_pop_theta_extractor(settings):
+    """
+    Creates a JAX-compatible function that intelligently slices the flat `theta` array
+    to extract ONLY the population parameters, dynamically accounting for any flags
+    or parameters fixed via `settings["fixed_parameter_values"]`.
+    """
+    pop_model_name = settings["pop_model"]
+    _, _, pop_labels, _ = pop_model_prior_parser(pop_model_name)
+    
+    cosmo_labels = ["H0", "Om0"]
+    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
+
+    expected_labels = []
+    if not settings.get("fix_cosmology", False):
+        expected_labels.extend(cosmo_labels)
+    if not settings.get("fix_population", False):
+        expected_labels.extend(pop_labels)
+    if not settings.get("fix_survey", False):
+        expected_labels.extend(survey_labels)
+
+    fixed_parameter_values = settings.get("fixed_parameter_values", {})
+    if fixed_parameter_values is None:
+        fixed_parameter_values = {}
+        
+    expected_set = set(expected_labels)
+    fixed_inside_sampled = {k: float(v) for k, v in fixed_parameter_values.items() if k in expected_set}
+
+    # Determine which index in `theta` corresponds to each label
+    coord_indices = {}
+    offset = 0
+    for label in expected_labels:
+        if label in fixed_inside_sampled:
+            continue
+        coord_indices[label] = offset
+        offset += 1
+        
+    if settings.get("fix_population", False):
+        fixed_pop_array = get_fixed_population_params(pop_model_name)
+        def extractor(theta):
+            return fixed_pop_array
+    else:
+        pop_indices_in_theta = []
+        pop_fixed_mask = []
+        pop_fixed_values = []
+        
+        for label in pop_labels:
+            if label in fixed_parameter_values:
+                pop_fixed_mask.append(True)
+                pop_fixed_values.append(float(fixed_parameter_values[label]))
+                pop_indices_in_theta.append(0) # Dummy index
+            else:
+                pop_fixed_mask.append(False)
+                pop_fixed_values.append(0.0)
+                pop_indices_in_theta.append(coord_indices[label])
+                
+        pop_fixed_mask_jnp = jnp.array(pop_fixed_mask, dtype=bool)
+        pop_fixed_values_jnp = jnp.array(pop_fixed_values, dtype=float)
+        pop_indices_in_theta_jnp = jnp.array(pop_indices_in_theta, dtype=int)
+        
+        def extractor(theta):
+            sampled_vals = theta[pop_indices_in_theta_jnp]
+            return jnp.where(pop_fixed_mask_jnp, pop_fixed_values_jnp, sampled_vals)
+            
+    return extractor
 
 # ------------------------------------------------------------
 # JAX posterior predictive engine (batched, per-sample PPD)
 # ------------------------------------------------------------
-def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid, chigrid):
+def make_single_theta_predictive(pop_model, settings, mgrid, qgrid, zgrid, chigrid):
     mgrid = jnp.asarray(mgrid)
     qgrid = jnp.asarray(qgrid)
     zgrid = jnp.asarray(zgrid)
@@ -185,10 +251,16 @@ def make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid, chigrid):
     valid = (q_eval >= qgrid[0]) & (q_eval <= qgrid[-1])
     jac = 1.0 / mgrid[:, None]
 
+    # Initialize dynamic parameter extractor
+    pop_extractor = build_pop_theta_extractor(settings)
+
     @jax.jit
     def single_theta(theta):
-        # pop_model must now accept chi_grid
-        logp = pop_model(m1_grid, q_grid, z_grid, chi_grid, theta)
+        # Extract purely population parameters
+        pop_theta = pop_extractor(theta)
+        
+        # pop_model must now accept chi_grid and the filtered pop_theta
+        logp = pop_model(m1_grid, q_grid, z_grid, chi_grid, pop_theta)
         p = jnp.exp(logp)
 
         # -----------------------------------------------------
@@ -256,7 +328,7 @@ def auto_batch_size(nsamples, nm, nq, nz, nchi, target_bytes=2e9):
 
 
 def posterior_predictive_mass_distributions_jax(
-    pop_model, samples, mgrid, qgrid, zgrid, chigrid, batch_size=None
+    pop_model, settings, samples, mgrid, qgrid, zgrid, chigrid, batch_size=None
 ):
     samples = jnp.asarray(samples)
     mgrid = jnp.asarray(mgrid)
@@ -273,7 +345,7 @@ def posterior_predictive_mass_distributions_jax(
     if batch_size is None:
         batch_size = auto_batch_size(ns, nm, nq, nz, nchi)
 
-    single_theta = make_single_theta_predictive(pop_model, mgrid, qgrid, zgrid, chigrid)
+    single_theta = make_single_theta_predictive(pop_model, settings, mgrid, qgrid, zgrid, chigrid)
 
     pm1_list   = []
     pm2_list   = []
@@ -445,7 +517,7 @@ def main():
 
         pm1_samples, pm2_samples, pq_samples, pz_samples, pchi_samples, pm1m2_samples = (
             posterior_predictive_mass_distributions_jax(
-                pop_model, samples, mgrid, qgrid, zgrid, chigrid, batch_size=args.batch_size
+                pop_model, settings, samples, mgrid, qgrid, zgrid, chigrid, batch_size=args.batch_size
             )
         )
 

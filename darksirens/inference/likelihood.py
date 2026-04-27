@@ -7,6 +7,7 @@ from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em.completeness import universe_model_parser
 from darksirens.utils.cosmology import z_of_dL, ddL_of_z
 from darksirens.utils.utils import logdiffexp
+from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog
 
 from astropy.cosmology import Planck15
 
@@ -26,16 +27,13 @@ survey_params_fid = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
     ],
 )
 def darksiren_log_likelihood(
-    cosmo_params,
-    survey_params,
+    cosmo: CosmoParams,
+    survey: SurveyParams,
     pop_params,
-    m1det, m2det, dL, chieff, p_pe, pixels_pe,
-    zgals_pe, dzgals_pe, wgals_pe,
-    m1detsels, m2detsels, dLsels, chieffsels, p_draw,
-    pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
-    nEvents, nsamp, Ndraw, apix,
+    m1det, m2det, dL, chieff, p_pe, pixels_pe, em_catalog_pe: EMCatalog,
+    m1detsels, m2detsels, dLsels, chieffsels, p_draw, pixels_sel, em_catalog_sel: EMCatalog,
+    nEvents, nsamp, Ndraw,
     pop_model, universe_model,
-    delta_g_pix_z,
     ignore_completeness=False,
 ):
     log_p_pop = pop_model_parser(pop_model=pop_model)
@@ -45,21 +43,11 @@ def darksiren_log_likelihood(
         raise ImplementationError("ignore_completeness=True is only implemented for universe_model='dark_sirens'.")
     raw_logPriorUniverse = universe_model_parser(universe_model=universe_model)
 
-    def logPriorUniverse_safe(z, pix,
-                              H0, Om0, n0, z50, w, delta,
-                              apix, zgals, dzgals, wgals,
-                              delta_g_pix_z, b_miss, alpha):
-        lp = raw_logPriorUniverse(
-            z, pix,
-            H0, Om0, n0, z50, w, delta,
-            apix, zgals, dzgals, wgals,
-            delta_g_pix_z, b_miss, alpha
-        )
+    def logPriorUniverse_safe(z, pix, cosmo, survey, em_catalog):
+        lp = raw_logPriorUniverse(z, pix, cosmo, survey, em_catalog)
         return jnp.where(jnp.isfinite(lp), lp, -1e6)
 
-    H0, Om0 = cosmo_params
-    log10n0, z50, w, delta, b_miss, alpha = survey_params
-    n0 = 10.0**log10n0
+    H0, Om0 = cosmo.H0, cosmo.Om0
 
     # --- Selection term μ ---
     zsels = z_of_dL(dLsels, H0, Om0)
@@ -70,10 +58,7 @@ def darksiren_log_likelihood(
     # Pass chieffsels to population evaluation
     log_det_weights = log_p_pop(m1sels, qsels, zsels, chieffsels, pop_params)
     log_det_weights += logPriorUniverse_safe(
-        zsels, pixels_sel,
-        H0, Om0, n0, z50, w, delta,
-        apix, zgals_sel, dzgals_sel, wgals_sel,
-        delta_g_pix_z, b_miss, alpha
+        zsels, pixels_sel, cosmo, survey, em_catalog_sel
     )
     log_det_weights += -jnp.log(ddL_of_z(zsels, dLsels, H0, Om0))
     log_det_weights += -jnp.log(p_draw) - 2*jnp.log1p(zsels)
@@ -95,10 +80,7 @@ def darksiren_log_likelihood(
     # Pass chieff to population evaluation
     log_weights = log_p_pop(m1, q, z, chieff, pop_params)
     log_weights += logPriorUniverse_safe(
-        z, pixels_pe,
-        H0, Om0, n0, z50, w, delta,
-        apix, zgals_pe, dzgals_pe, wgals_pe,
-        delta_g_pix_z, b_miss, alpha
+        z, pixels_pe, cosmo, survey, em_catalog_pe
     )
     log_weights += -jnp.log(ddL_of_z(z, dL, H0, Om0))
     log_weights += -jnp.log(p_pe) - 2*jnp.log1p(z)
@@ -217,17 +199,44 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
                 for label in survey_labels
             ])
 
+        # --- Instantiate PyTrees / Dataclasses ---
+        cosmo = CosmoParams(H0=H0, Om0=Om0)
+        
+        # Unpack survey_params array to build SurveyParams object.
+        # Ensure we invert the log10n0 here directly!
+        survey = SurveyParams(
+            n0=10.0**survey_params[0],
+            z50=survey_params[1],
+            w=survey_params[2],
+            delta=survey_params[3],
+            b_miss=survey_params[4],
+            alpha=survey_params[5]
+        )
+        
+        em_catalog_pe = EMCatalog(
+            apix=apix,
+            zgals=zgals_pe,
+            dzgals=dzgals_pe,
+            wgals=wgals_pe,
+            delta_g_pix_z=delta_g_pix_z
+        )
+        
+        em_catalog_sel = EMCatalog(
+            apix=apix,
+            zgals=zgals_sel,
+            dzgals=dzgals_sel,
+            wgals=wgals_sel,
+            delta_g_pix_z=delta_g_pix_z
+        )
+
         return darksiren_log_likelihood(
-            (H0, Om0),
-            survey_params,
+            cosmo,
+            survey,
             pop_params,
-            m1det, m2det, dL, chieff, p_pe, pixels_pe,
-            zgals_pe, dzgals_pe, wgals_pe,
-            m1detsels, m2detsels, dLsels, chieffsels, p_draw,
-            pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
-            nEvents, nsamp, Ndraw, apix,
+            m1det, m2det, dL, chieff, p_pe, pixels_pe, em_catalog_pe,
+            m1detsels, m2detsels, dLsels, chieffsels, p_draw, pixels_sel, em_catalog_sel,
+            nEvents, nsamp, Ndraw,
             pop_model, universe_model,
-            delta_g_pix_z,
             ignore_completeness=ignore_completeness,
         )
 

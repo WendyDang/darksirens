@@ -10,6 +10,7 @@ from jax.nn import sigmoid
 import healpy as hp
 
 from darksirens.utils.cosmology import dV_of_z
+from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog
 
 # ------------------------------------------------------------
 # Global redshift grid
@@ -75,8 +76,6 @@ def compute_LSS_overdensity(zgals, nside):
 # ------------------------------------------------------------
 # Optional logistic high‑z rolloff
 # ------------------------------------------------------------
-from jax.nn import sigmoid
-
 def Pcomplete0(z, z50, w):
     w = jnp.clip(w, 1e-6, None)
     return sigmoid((z50 - z) / w)
@@ -85,14 +84,16 @@ def Pcomplete0(z, z50, w):
 # LSS completeness (unified: alpha=0 → isotropic)
 # ------------------------------------------------------------
 @jit
-def completeness_fraction(H0, Om0, n0, z50, w, delta,
-                          z, pix, apix, zgals,
-                          delta_g_pix_z, b_miss, alpha):
+def completeness_fraction(z, pix, cosmo: CosmoParams, survey: SurveyParams, em_catalog: EMCatalog):
     """
     Unified completeness model:
       - alpha = 0 → isotropic
       - alpha > 0 → LSS-aware blended missing density
     """
+    # 1. Unpack immediately
+    H0, Om0 = cosmo.H0, cosmo.Om0
+    n0, z50, w, delta, b_miss, alpha = survey.n0, survey.z50, survey.w, survey.delta, survey.b_miss, survey.alpha
+    apix, zgals, delta_g_pix_z = em_catalog.apix, em_catalog.zgals, em_catalog.delta_g_pix_z
 
     # 1. Isotropic completeness curve C_iso(z)
     Nexp = 1.0 + Ngals_expected_lessthanz_vmap(zgrid, H0, Om0, n0, delta, apix)
@@ -137,9 +138,7 @@ def completeness_fraction(H0, Om0, n0, z50, w, delta,
 # vmap version
 completeness_fraction_vmap = jit(
     vmap(completeness_fraction,
-         in_axes=(None, None, None, None, None, None,
-                  0, 0, None, None,
-                  None, None, None),
+         in_axes=(0, 0, None, None, None),
          out_axes=(0, 0, 0))
 )
 
@@ -147,16 +146,20 @@ completeness_fraction_vmap = jit(
 # Catalog prior
 # ------------------------------------------------------------
 @jit
-def logpcatalog(z, pix, H0, Om0, delta, zgals, dzgals, wgals):
+def logpcatalog(z, pix, cosmo: CosmoParams, survey: SurveyParams, em_catalog: EMCatalog):
+    H0, Om0 = cosmo.H0, cosmo.Om0
+    delta = survey.delta
+    zgals, dzgals, wgals = em_catalog.zgals, em_catalog.dzgals, em_catalog.wgals
+
     zs = zgals[pix]
     sig = dzgals[pix]
-    w = wgals[pix] * dV_of_z(zs, H0, Om0) * (1 + zs)**(delta - 1)
-    w = w / jnp.sum(w)
-    return logsumexp(jnp.log(w) + norm.logpdf(z, zs, sig))
+    w_weight = wgals[pix] * dV_of_z(zs, H0, Om0) * (1 + zs)**(delta - 1)
+    w_weight = w_weight / jnp.sum(w_weight)
+    return logsumexp(jnp.log(w_weight) + norm.logpdf(z, zs, sig))
 
 logpcatalog_vmap = jit(
     vmap(logpcatalog,
-         in_axes=(0, 0, None, None, None, None, None, None),
+         in_axes=(0, 0, None, None, None),
          out_axes=0)
 )
 
@@ -164,24 +167,17 @@ logpcatalog_vmap = jit(
 # Universe prior (unified)
 # ------------------------------------------------------------
 @jit
-def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
-                     delta, apix,
-                     zgals, dzgals, wgals,
-                     delta_g_pix_z, b_miss, alpha):
+def logPriorUniverse(z, pix, cosmo: CosmoParams, survey: SurveyParams, em_catalog: EMCatalog):
     """
     Unified dark-siren prior:
       p(z|pix) ∝ [ f p_cat + (1-f) p_miss ]
     """
 
-    f, pmiss, _ = completeness_fraction_vmap(
-        H0, Om0, n0, z50, w, delta,
-        z, pix, apix, zgals,
-        delta_g_pix_z, b_miss, alpha
-    )
+    f, pmiss, _ = completeness_fraction_vmap(z, pix, cosmo, survey, em_catalog)
 
     logpmiss = jnp.nan_to_num(jnp.log(pmiss), neginf=-jnp.inf)
     logpcat = jnp.nan_to_num(
-        logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals),
+        logpcatalog_vmap(z, pix, cosmo, survey, em_catalog),
         neginf=-jnp.inf
     )
 
@@ -194,41 +190,33 @@ def logPriorUniverse(z, pix, H0, Om0, n0, z50, w,
     return log_mix - 1.0 * jnp.log1p(z)
 
 @jit
-def logPriorUniverse_complete_catalog(z, pix, H0, Om0, n0, z50, w,
-                                        delta, apix, zgals, dzgals, wgals,
-                                        delta_g_pix_z, b_miss, alpha):
-        """
-        Dark-siren prior under the complete-catalog assumption:
-            p(z|pix) = p_cat(z|pix)
+def logPriorUniverse_complete_catalog(z, pix, cosmo: CosmoParams, survey: SurveyParams, em_catalog: EMCatalog):
+    """
+    Dark-siren prior under the complete-catalog assumption:
+        p(z|pix) = p_cat(z|pix)
 
-        This removes completeness-correction terms while retaining catalog-conditioned
-        inference and the usual selection normalization structure in the likelihood.
-        """
-        logpcat = jnp.nan_to_num(
-                logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals),
-                neginf=-jnp.inf
-        )
-        return logpcat - 1.0 * jnp.log1p(z)
+    This removes completeness-correction terms while retaining catalog-conditioned
+    inference and the usual selection normalization structure in the likelihood.
+    """
+    logpcat = jnp.nan_to_num(
+            logpcatalog_vmap(z, pix, cosmo, survey, em_catalog),
+            neginf=-jnp.inf
+    )
+    return logpcat - 1.0 * jnp.log1p(z)
 
 
 @jit
-def logPriorUniverse_spectralsirens_from_dark(z, pix, H0, Om0, n0, z50, w,
-                                    delta, apix, zgals, dzgals, wgals,
-                                    delta_g_pix_z, b_miss, alpha):
+def logPriorUniverse_spectralsirens_from_dark(z, pix, cosmo: CosmoParams, survey: SurveyParams, em_catalog: EMCatalog):
     """
     Same structure, but with f=0 (no catalog term in the mixture).
     """
-    f, pmiss, _ = completeness_fraction_vmap(
-        H0, Om0, n0, z50, w, delta,
-        z, pix, apix, zgals,
-        delta_g_pix_z, b_miss, alpha
-    )
+    f, pmiss, _ = completeness_fraction_vmap(z, pix, cosmo, survey, em_catalog)
 
     f = 0.0 * f  # force f=0
 
     logpmiss = jnp.nan_to_num(jnp.log(pmiss), neginf=-jnp.inf)
     logpcat = jnp.nan_to_num(
-        logpcatalog_vmap(z, pix, H0, Om0, delta, zgals, dzgals, wgals),
+        logpcatalog_vmap(z, pix, cosmo, survey, em_catalog),
         neginf=-jnp.inf
     )
 
@@ -243,16 +231,16 @@ def logPriorUniverse_spectralsirens_from_dark(z, pix, H0, Om0, n0, z50, w,
 
 
 @jit
-def logPriorUniverse_spectralsirens(z, pix, H0, Om0, n0, z50, w,
-                                         delta, apix, zgals, dzgals, wgals,
-                                         delta_g_pix_z, b_miss, alpha):
+def logPriorUniverse_spectralsirens(z, pix, cosmo: CosmoParams, survey: SurveyParams, em_catalog: EMCatalog):
     """
     Pure volume + evolution prior (no catalog, no completeness).
     """
+    H0, Om0 = cosmo.H0, cosmo.Om0
     pvol = dV_of_z(zgrid, H0, Om0) / (1.0 + zgrid)
     pvol = pvol / jnp.trapezoid(pvol, zgrid)
     logpvol = jnp.log(pvol)
     return jnp.interp(z, zgrid, logpvol)
+
 
 def universe_model_parser(universe_model='dark_sirens'):
     if universe_model == 'dark_sirens':
