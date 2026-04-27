@@ -112,6 +112,7 @@ def main():
     optp.add_argument("--nwalkers", type=int, default=32)
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
+    optp.add_argument("--show_progress", type=str_to_bool, default=True)
     optp.add_argument("--use_LSS", type=str_to_bool, default=False)
     optp.add_argument("--max_samples", type=int, default=1_000_000)
 
@@ -246,8 +247,8 @@ def main():
         # Generate corner plot
         print(f"[*] Generating corner plot...")
         samples = results["samples"]
-        #fig = make_production_corner(samples, labels)
-        #fig.savefig(os.path.join(run_dir, "corner.pdf"), bbox_inches='tight', dpi=200)
+        fig = make_production_corner(samples, labels)
+        fig.savefig(os.path.join(run_dir, "corner.pdf"), bbox_inches='tight', dpi=200)
 
         print(f"[*] SUCCESS: Run complete.")
     else:
