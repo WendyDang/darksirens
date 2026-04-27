@@ -34,16 +34,44 @@ def apply_block_prior_overrides(block_name, labels, lower, upper, overrides):
 
     return lower_out, upper_out
 
+
+def apply_block_fixed_values(block_name, labels, lower, upper, fixed_values):
+    """Apply per-parameter fixed values by collapsing bounds to [value, value]."""
+    if fixed_values is None:
+        return list(lower), list(upper)
+
+    if not isinstance(fixed_values, dict):
+        raise TypeError(
+            f"Fixed values for block '{block_name}' must be a dict, got {type(fixed_values).__name__}."
+        )
+
+    lower_out = list(lower)
+    upper_out = list(upper)
+    label_to_index = {label: idx for idx, label in enumerate(labels)}
+
+    for label, value in fixed_values.items():
+        if label not in label_to_index:
+            continue
+        idx = label_to_index[label]
+        v = float(value)
+        lower_out[idx] = v
+        upper_out[idx] = v
+
+    return lower_out, upper_out
+
 def build_parameter_space(
     pop_model,
     fix_population,
     fix_cosmology,
     fix_survey,
     prior_overrides=None,
+    fixed_parameter_values=None,
 ):
     """Construct labels and prior bounds for cosmological, population, and survey parameters."""
     if prior_overrides is None:
         prior_overrides = {}
+    if fixed_parameter_values is None:
+        fixed_parameter_values = {}
 
     # --- Cosmology ---
     cosmo_labels = ["H0", "Om0"]
@@ -67,6 +95,13 @@ def build_parameter_space(
             f"{sorted(known_labels)}"
         )
 
+    unknown_fixed = [k for k in fixed_parameter_values.keys() if k not in known_labels]
+    if unknown_fixed:
+        raise KeyError(
+            f"Unknown fixed parameter labels: {unknown_fixed}. Valid labels for pop_model='{pop_model}': "
+            f"{sorted(known_labels)}"
+        )
+
     # Apply block overrides
     cosmo_lower, cosmo_upper = apply_block_prior_overrides(
         "cosmology", cosmo_labels, cosmo_lower, cosmo_upper, prior_overrides
@@ -76,6 +111,17 @@ def build_parameter_space(
     )
     survey_lower, survey_upper = apply_block_prior_overrides(
         "survey", survey_labels, survey_lower, survey_upper, prior_overrides
+    )
+
+    # Apply fixed-value presets after prior overrides so fixed values always win.
+    cosmo_lower, cosmo_upper = apply_block_fixed_values(
+        "cosmology", cosmo_labels, cosmo_lower, cosmo_upper, fixed_parameter_values
+    )
+    pop_lower, pop_upper = apply_block_fixed_values(
+        "population", pop_labels, pop_lower, pop_upper, fixed_parameter_values
+    )
+    survey_lower, survey_upper = apply_block_fixed_values(
+        "survey", survey_labels, survey_lower, survey_upper, fixed_parameter_values
     )
 
     n_cosmo = len(cosmo_labels)
