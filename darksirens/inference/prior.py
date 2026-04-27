@@ -3,28 +3,85 @@ import jax.numpy as jnp
 from darksirens.gw.populations import pop_model_prior_parser
 from darksirens.utils.cosmology import Om0Planck
 
+def apply_block_prior_overrides(block_name, labels, lower, upper, overrides):
+    """Apply flat per-parameter prior overrides to a parameter block.
 
-def build_parameter_space(pop_model, fix_population, fix_cosmology, fix_survey):
+    Supported format:
+        {"param_name": [low, high], ...}
     """
-    Construct labels and bounds for cosmology, population, and survey parameters.
-    """
+    if overrides is None:
+        return list(lower), list(upper)
+
+    if not isinstance(overrides, dict):
+        raise TypeError(
+            f"Prior overrides for block '{block_name}' must be a dict, got {type(overrides).__name__}."
+        )
+
+    lower_out = list(lower)
+    upper_out = list(upper)
+    label_to_index = {label: idx for idx, label in enumerate(labels)}
+
+    for label, bounds in overrides.items():
+        if label not in label_to_index:
+            continue
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            raise ValueError(
+                f"Override for '{label}' in block '{block_name}' must be [lower, upper]."
+            )
+        idx = label_to_index[label]
+        lower_out[idx] = bounds[0]
+        upper_out[idx] = bounds[1]
+
+    return lower_out, upper_out
+
+def build_parameter_space(
+    pop_model,
+    fix_population,
+    fix_cosmology,
+    fix_survey,
+    prior_overrides=None,
+):
+    """Construct labels and prior bounds for cosmological, population, and survey parameters."""
+    if prior_overrides is None:
+        prior_overrides = {}
+
     # --- Cosmology ---
     cosmo_labels = ["H0", "Om0"]
     cosmo_lower = [20.0, Om0Planck - 0.1]
     cosmo_upper = [120.0, Om0Planck + 0.1]
-    n_cosmo = len(cosmo_labels)
 
     # --- Population ---
     pop_lower, pop_upper, pop_labels, model_name = pop_model_prior_parser(pop_model)
-    n_pop = len(pop_labels)
 
     # --- Survey ---
     survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
     survey_lower = [-10.0, 0.0, 0.01, -10.0, 0.0, 0.0]
     survey_upper = [10.0, 5.0, 5.0, 10.0, 5.0, 1.0]
+
+    # Make sure all prior override keys are valid parameter labels
+    known_labels = set(cosmo_labels) | set(pop_labels) | set(survey_labels)
+    unknown = [k for k in prior_overrides.keys() if k not in known_labels]
+    if unknown:
+        raise KeyError(
+            f"Unknown prior override labels: {unknown}. Valid labels for pop_model='{pop_model}': "
+            f"{sorted(known_labels)}"
+        )
+
+    # Apply block overrides
+    cosmo_lower, cosmo_upper = apply_block_prior_overrides(
+        "cosmology", cosmo_labels, cosmo_lower, cosmo_upper, prior_overrides
+    )
+    pop_lower, pop_upper = apply_block_prior_overrides(
+        "population", pop_labels, pop_lower, pop_upper, prior_overrides
+    )
+    survey_lower, survey_upper = apply_block_prior_overrides(
+        "survey", survey_labels, survey_lower, survey_upper, prior_overrides
+    )
+
+    n_cosmo = len(cosmo_labels)
+    n_pop = len(pop_labels)
     n_survey = len(survey_labels)
 
-    # --- Assemble full parameter vector ---
     labels = []
     lower = []
     upper = []
@@ -54,9 +111,16 @@ def build_parameter_space(pop_model, fix_population, fix_cosmology, fix_survey):
         n_survey_eff = 0
 
     return (
-        labels, np.array(lower), np.array(upper),
-        n_pop_eff, pop_labels, survey_labels, cosmo_labels,
-        n_cosmo_eff, n_survey_eff, model_name,
+        labels,
+        np.array(lower),
+        np.array(upper),
+        n_pop_eff,
+        pop_labels,
+        survey_labels,
+        cosmo_labels,
+        n_cosmo_eff,
+        n_survey_eff,
+        model_name,
     )
 
 def make_prior_transform(lower, upper):
