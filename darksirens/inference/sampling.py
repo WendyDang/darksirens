@@ -54,7 +54,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
             model=model,
             num_live_points=opts.nlive,
             max_samples=opts.max_samples,
-            verbose=True,
+            verbose=opts.show_progress,
         )
 
         key = jax.random.PRNGKey(opts.seed)
@@ -90,7 +90,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
             nlive=opts.nlive
         )
         
-        sampler.run_nested(dlogz=opts.dlogz)
+        sampler.run_nested(dlogz=opts.dlogz, print_progress=opts.show_progress)
         res = sampler.results
 
         # Posterior samples
@@ -195,7 +195,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
         
         for i in range(0, opts.nsteps, checkpoint_interval):
             n_steps = min(checkpoint_interval, opts.nsteps - i)
-            sampler.run_mcmc(p0, n_steps, progress=True)
+            sampler.run_mcmc(p0, n_steps, progress=opts.show_progress)
             p0 = sampler.get_last_sample()
             
             current_time = time.time()
