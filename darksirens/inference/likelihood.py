@@ -18,8 +18,11 @@ survey_params_fid = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
 @partial(
     jax.jit,
     static_argnames=[
-        "nEvents", "Ndraw", "nsamp", "apix",
-        "pop_model", "universe_model"
+        "nEvents",
+        "nsamp",
+        "pop_model",
+        "universe_model",
+        "ignore_completeness",
     ],
 )
 def darksiren_log_likelihood(
@@ -32,9 +35,14 @@ def darksiren_log_likelihood(
     pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
     nEvents, nsamp, Ndraw, apix,
     pop_model, universe_model,
-    delta_g_pix_z
+    delta_g_pix_z,
+    ignore_completeness=False,
 ):
     log_p_pop = pop_model_parser(pop_model=pop_model)
+    if ignore_completeness and universe_model == "dark_sirens":
+        universe_model = "dark_sirens_complete_catalog"
+    elif ignore_completeness and universe_model != "dark_sirens":
+        raise ImplementationError("ignore_completeness=True is only implemented for universe_model='dark_sirens'.")
     raw_logPriorUniverse = universe_model_parser(universe_model=universe_model)
 
     def logPriorUniverse_safe(z, pix,
@@ -98,7 +106,7 @@ def darksiren_log_likelihood(
     log_weights = log_weights.reshape((nEvents, nsamp))
     ll += jnp.sum(-jnp.log(nsamp) + logsumexp(log_weights, axis=-1))
 
-    return jnp.nan_to_num(ll, nan=-jnp.inf)
+    return jnp.where(jnp.isfinite(ll), ll, -jnp.inf)
 
 
 def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
@@ -123,6 +131,7 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
     
     nEvents, nsamp, Ndraw, apix = data["nEvents"], opts.nsamp, data["Ndraw"], data["apix"]
     pop_model, universe_model = opts.pop_model, opts.universe_model
+    ignore_completeness = opts.ignore_completeness
 
     # Convert survey-optional data to JAX arrays (even if empty/dummy)
     zgals_pe = to_jax("zgals_pe")
@@ -169,7 +178,8 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid):
             pixels_sel, zgals_sel, dzgals_sel, wgals_sel,
             nEvents, nsamp, Ndraw, apix,
             pop_model, universe_model,
-            delta_g_pix_z
+            delta_g_pix_z,
+            ignore_completeness=ignore_completeness,
         )
 
     return likelihood

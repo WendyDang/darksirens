@@ -99,6 +99,7 @@ def main():
     optp.add_argument("--fix_population", type=str_to_bool, default=False)
     optp.add_argument("--fix_cosmology", type=str_to_bool, default=False)
     optp.add_argument("--fix_survey", type=str_to_bool, default=False)
+    optp.add_argument("--ignore_completeness", type=str_to_bool, default=False)
     
     optp.add_argument("--nsamp", type=int, default=256)
 
@@ -121,6 +122,7 @@ def main():
     print(f"    - Universe Model: {opts.universe_model}")
     print(f"    - Population Model: {opts.pop_model}")
     print(f"    - Fix Cosmo: {opts.fix_cosmology} | Fix Pop: {opts.fix_population}")
+    print(f"    - Disable completeness corrections: {opts.ignore_completeness}")
     print(f"    - Sampler: {'jaxns' if opts.jaxns else 'dynesty' if opts.dynesty else 'emcee' if opts.emcee else 'NONE'}")
     print(f"    - Using LSS: {opts.use_LSS}")
 
