@@ -1,5 +1,6 @@
 # darksirens/utils/containers.py
 from typing import NamedTuple, Any
+import jax.numpy as jnp
 
 class CosmoParams(NamedTuple):
     """Cosmological parameters for the background universe."""
@@ -22,8 +23,24 @@ class EMCatalog(NamedTuple):
     wgals: Any
     delta_g_pix_z: Any
 
-# (Optional but helpful) A container for GW Event data
 class GWEvent(NamedTuple):
-    """Data for a single Gravitational Wave event."""
-    z: Any        # Event redshift
-    # You can add m1, q, chieff, dl, etc. here later!
+    """
+    JAX-compatible PyTree container for Gravitational Wave Parameter Estimation (PE) samples.
+    Supports either a single event or a stacked batch of multiple events.
+    """
+    m1det: Any      # Primary mass in the detector frame [M_sun]
+    m2det: Any      # Secondary mass in the detector frame [M_sun]
+    dL: Any         # Luminosity distance [Mpc]
+    chieff: Any     # Effective inspiral spin parameter
+    prior_wt: Any    # PE prior/weights evaluated at the samples
+    pixels: Any     # HEALPix pixel indices corresponding to the sky location
+
+    @property
+    def q(self):
+        """Mass ratio (m2 / m1). Guaranteed to be <= 1 if m1 >= m2."""
+        return self.m2det / self.m1det
+
+    @property
+    def chirp_mass(self):
+        """Detector-frame chirp mass."""
+        return (self.m1det * self.m2det)**(3/5) / (self.m1det + self.m2det)**(1/5)
