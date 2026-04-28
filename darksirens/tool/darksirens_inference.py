@@ -21,11 +21,8 @@ from argparse import ArgumentParser
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.gw.populations import get_fixed_population_params
 
-from darksirens.em.utils import load_survey
-from darksirens.em.completeness import ( 
-    zgrid, Ngals_lessthanz_grid_vmap, overdensity_from_counts,
-    compute_LSS_overdensity,
-)
+from darksirens.em import load_survey
+from darksirens.em import zgrid, compute_lss_overdensity
 
 from darksirens.inference.likelihood import darksiren_log_likelihood
 from darksirens.inference.data import load_all_data
@@ -127,8 +124,18 @@ def main():
     print(f"    - Sampler: {'jaxns' if opts.jaxns else 'dynesty' if opts.dynesty else 'emcee' if opts.emcee else 'NONE'}")
     print(f"    - Using LSS: {opts.use_LSS}")
 
+    # Resolve ignore_completeness → effective universe_model before any
+    # downstream logic sees opts.universe_model.
+    if opts.ignore_completeness:
+        if opts.universe_model == "dark_sirens":
+            print("[*] ignore_completeness=True: switching universe_model → dark_sirens_complete")
+            opts.universe_model = "dark_sirens_complete"
+        else:
+            print(f"[!] FATAL ERROR: ignore_completeness=True is only valid for universe_model='dark_sirens', got '{opts.universe_model}'.")
+            sys.exit(1)
+
     # Validation for models that require survey data
-    GALAXY_AWARE_MODELS = ["dark_sirens", "spectral_sirens_from_dark"]
+    GALAXY_AWARE_MODELS = ["dark_sirens", "dark_sirens_complete"]
     if opts.universe_model in GALAXY_AWARE_MODELS and not opts.survey_path:
         print(f"[!] FATAL ERROR: Model '{opts.universe_model}' requires --survey_path.")
         sys.exit(1)
@@ -150,7 +157,7 @@ def main():
     print(f"[*] Preparing LSS/Overdensity Field...")
     if opts.universe_model in GALAXY_AWARE_MODELS and opts.use_LSS:
         print(f"    - Calculating high-resolution overdensity grid...")
-        delta_g_pix_z = compute_LSS_overdensity(data["zgals"], nside)
+        delta_g_pix_z = compute_lss_overdensity(data["zgals"], nside)
     else:
         print(f"    - Non-LSS run. Creating memory-efficient dummy (1, {len(zgrid)}) grid.")
         # We use shape (1, nz) to satisfy JAX broadcasting without 93GB allocations

@@ -180,4 +180,4 @@ class PopulationModel:
         tm = theta[:-1]
         gamma = theta[-1]
         p = self.mixture(m1, q, chieff, tm)
-        return jnp.where(p > 0, jnp.log(p), -1e10) + gamma * jnp.log1p(z)
+        return jnp.where(p > 0, jnp.log(p), -1e10) + (gamma - 1.0) * jnp.log1p(z)

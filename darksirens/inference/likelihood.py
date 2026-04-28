@@ -4,7 +4,7 @@ from functools import partial
 from jax.scipy.special import logsumexp
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
-from darksirens.em.completeness import universe_model_parser
+from darksirens.em import get_redshift_prior
 from darksirens.utils.cosmology import z_of_dL, ddL_of_z
 from darksirens.utils.utils import logdiffexp
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
@@ -23,7 +23,6 @@ survey_params_fid = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
         "nsamp",
         "pop_model",
         "universe_model",
-        "ignore_completeness",
     ],
 )
 def darksiren_log_likelihood(
@@ -34,16 +33,9 @@ def darksiren_log_likelihood(
     gw_sel: GWEvent, em_catalog_sel: EMCatalog,
     nEvents, nsamp, Ndraw,
     pop_model, universe_model,
-    ignore_completeness=False,
 ):
     log_p_pop = pop_model_parser(pop_model=pop_model)
-    
-    if ignore_completeness and universe_model == "dark_sirens":
-        universe_model = "dark_sirens_complete_catalog"
-    elif ignore_completeness and universe_model != "dark_sirens":
-        raise ValueError("ignore_completeness=True is only implemented for universe_model='dark_sirens'.")
-    
-    raw_logPriorUniverse = universe_model_parser(universe_model=universe_model)
+    raw_logPriorUniverse = get_redshift_prior(universe_model)
 
     def logPriorUniverse_safe(z, pix, cosmo, survey, em_catalog):
         lp = raw_logPriorUniverse(z, pix, cosmo, survey, em_catalog)
@@ -104,7 +96,6 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
 
     nEvents, nsamp, Ndraw, apix = data["nEvents"], opts.nsamp, data["Ndraw"], data["apix"]
     pop_model, universe_model = opts.pop_model, opts.universe_model
-    ignore_completeness = opts.ignore_completeness
 
     # Convert optional survey data to JAX arrays
     zgals_pe = to_jax("zgals_pe")
@@ -210,7 +201,6 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
             gw_sel, em_catalog_sel,
             nEvents, nsamp, Ndraw,
             pop_model, universe_model,
-            ignore_completeness=ignore_completeness,
         )
 
     return likelihood

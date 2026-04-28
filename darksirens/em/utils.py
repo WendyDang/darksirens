@@ -1,27 +1,23 @@
-import jax
+"""
+utils.py
+--------
+Module-level utilities and redshift grid shared across all submodules.
 
-from jax import random, jit, vmap, grad
-from jax import numpy as jnp
-from jax.lax import cond
+The grid is defined once here so that JAX can trace through it at
+compile time (via `jit`) without recompilation when it is imported by
+multiple submodules.  Using a log-spaced grid gives finer resolution
+at low redshift where the catalog is densest, and coarser resolution
+at high redshift where the prior is smooth.
+"""
 
-import astropy
-import numpy as np
-import healpy as hp
-
+import jax.numpy as jnp
 import h5py
-import astropy.units as u
 
-from astropy.cosmology import Planck15, FlatLambdaCDM, z_at_value
-import astropy.constants as constants
-from jax.scipy.special import logsumexp
-from scipy.interpolate import interp1d
-from scipy.stats import gaussian_kde
-from tqdm import tqdm
+# Log-spaced from z~0 to zMax, giving 1000 points.
+# expm1(linspace(log(1), log(zMax+1))) maps [0, log(zMax+1)] → [0, zMax].
+zMax: float = 5.0
+zgrid = jnp.expm1(jnp.linspace(jnp.log(1.0), jnp.log(zMax + 1.0), 1000))
 
-from argparse import ArgumentParser
-import glob
-
-from darksirens.utils.cosmology import *
 
 def load_survey(survey_path):
     with h5py.File(survey_path, 'r') as f:
