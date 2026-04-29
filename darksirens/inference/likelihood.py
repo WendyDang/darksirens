@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from jax.scipy.special import logsumexp
+import jax.tree_util as jtu
+from jax import lax
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em import get_redshift_prior
@@ -192,6 +194,11 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
             prior_wt=data["p_draw"],
             pixels=data["pixels_sel"]
         )
+
+        em_catalog_pe = jtu.tree_map(lax.optimization_barrier, em_catalog_pe)
+        em_catalog_sel = jtu.tree_map(lax.optimization_barrier, em_catalog_sel)
+        gw_pe = jtu.tree_map(lax.optimization_barrier, gw_pe)
+        gw_sel = jtu.tree_map(lax.optimization_barrier, gw_sel)
 
         return darksiren_log_likelihood(
             cosmo,

@@ -133,7 +133,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
         # --- NEW: Define a safe batch size to prevent GPU OOM ---
         # 8 is usually a safe sweet spot. If it still crashes, drop to 4 or 2.
         # If your GPU has lots of memory (e.g., 40GB A100), you can push it to 16.
-        BATCH_SIZE = 32
+        BATCH_SIZE = 1
 
         def batched_log_prob(coords):
             coords = np.asarray(coords)
@@ -166,7 +166,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
                                size=(opts.nwalkers, ndims))
 
         # Set up checkpointing via emcee backend
-        checkpoint_dir = Path(opts.output_path) / "emcee_checkpoints"
+        checkpoint_dir = Path(opts.save_path) / "emcee_checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         # Auto-isolate checkpoint files per run so concurrent jobs do not contend for one HDF5 lock.
         job_tag = os.environ.get("SLURM_JOB_ID")

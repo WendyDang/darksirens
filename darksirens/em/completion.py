@@ -90,7 +90,6 @@ _SIGMA_SMOOTH: float = 0.05
 # Internal helpers: observed dN/dz via Gaussian KDE
 # ------------------------------------------------------------
 
-@jit
 def _kde_dndz_obs(pix: int, zgals) -> jnp.ndarray:
     """
     Kernel density estimate of the observed dN_obs/dz for pixel `pix`
@@ -118,7 +117,6 @@ _kde_dndz_obs_vmap = jit(
 
 
 # For the LSS overdensity we still need cumulative counts
-@jit
 def _Ngals_lessthanz_grid(pix: int, zgals) -> jnp.ndarray:
     """Cumulative observed count N_obs(<z) on zgrid for pixel `pix`."""
     zs = zgals[pix]
@@ -135,7 +133,7 @@ _Ngals_lessthanz_grid_vmap = jit(
 # Smoothed expected dN/dz — lifted out of the vmap
 # ------------------------------------------------------------
 
-@jit
+
 def _smooth_expected_dndz(
     cosmo: CosmoParams,
     survey: SurveyParams,
@@ -176,7 +174,7 @@ def _smooth_expected_dndz(
 # ------------------------------------------------------------
 # LSS overdensity pre-computation (run once at startup)
 # ------------------------------------------------------------
-
+@jit
 def compute_lss_overdensity(zgals, nside: int) -> jnp.ndarray:
     """
     Compute the galaxy overdensity delta_g(pix, z) on the global zgrid
@@ -212,7 +210,7 @@ def compute_lss_overdensity(zgals, nside: int) -> jnp.ndarray:
 # High-z logistic rolloff
 # ------------------------------------------------------------
 
-@jit
+
 def _survey_rolloff(z, z50: float, w: float) -> jnp.ndarray:
     """
     Logistic rolloff: P(complete) -> 1 at z << z50, -> 0 at z >> z50.
@@ -227,7 +225,7 @@ def _survey_rolloff(z, z50: float, w: float) -> jnp.ndarray:
 # Inner completion kernel — takes precomputed dN_exp_smooth
 # ------------------------------------------------------------
 
-@jit
+
 def _catalog_completion_inner(
     z: float,
     pix: int,
