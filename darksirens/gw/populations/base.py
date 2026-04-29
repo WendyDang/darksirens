@@ -4,11 +4,13 @@ import jax.numpy as jnp
 
 from .utils import MASS_GRID, Q_GRID, CHI_GRID, M_LO
 
+
 @dataclass(frozen=True)
 class ParamSpec:
     label: str
     low: float
     high: float
+
 
 def pack_specs(*specs: ParamSpec):
     return (
@@ -16,6 +18,7 @@ def pack_specs(*specs: ParamSpec):
         [s.high for s in specs],
         [s.label for s in specs],
     )
+
 
 class MassComponent(ABC):
     @property
@@ -31,11 +34,31 @@ class MassComponent(ABC):
     def _eval_unnorm(self, m, theta):
         ...
 
-    def __call__(self, m, theta):
+    def _norm(self, theta) -> jnp.ndarray:
+        """
+        Normalisation integral over MASS_GRID.
+
+        Depends only on theta, not on the sample m.  Call once per theta
+        and reuse across all samples rather than recomputing inside a
+        per-sample loop.
+        """
+        return jnp.trapezoid(self._eval_unnorm(MASS_GRID, theta), MASS_GRID)
+
+    def __call__(self, m, theta, norm=None):
+        """
+        Evaluate the normalised mass PDF at m.
+
+        Parameters
+        ----------
+        norm : float or None
+            Pre-computed value from ``_norm(theta)``.  Supply this when
+            evaluating many samples at the same theta to avoid redundant
+            grid integration.
+        """
         p = self._eval_unnorm(m, theta)
-        p_grid = self._eval_unnorm(MASS_GRID, theta)
-        n = jnp.trapezoid(p_grid, MASS_GRID)
+        n = norm if norm is not None else self._norm(theta)
         return p / jnp.where(n > 0, n, 1.0)
+
 
 class PairingModel(ABC):
     @property
@@ -52,14 +75,16 @@ class PairingModel(ABC):
         ...
 
     def __call__(self, m1, q, m_min, dm_min, theta):
+        # PairingModel norm integrates over q for each m1, so it IS
+        # sample-dependent and cannot be lifted out of the per-sample loop.
         p = self._eval_unnorm(m1, q, m_min, dm_min, theta)
         m1_arr = jnp.atleast_1d(m1)
         m1_expanded = jnp.expand_dims(m1_arr, axis=-1)
-        
         p_grid = self._eval_unnorm(m1_expanded, Q_GRID, m_min, dm_min, theta)
         n = jnp.trapezoid(p_grid, Q_GRID, axis=-1)
         n = n.reshape(jnp.shape(m1))
         return p / jnp.where(n > 0, n, 1.0)
+
 
 class SpinModel(ABC):
     @property
@@ -75,11 +100,29 @@ class SpinModel(ABC):
     def _eval_unnorm(self, chieff, theta):
         ...
 
-    def __call__(self, chieff, theta):
+    def _norm(self, theta) -> jnp.ndarray:
+        """
+        Normalisation integral over CHI_GRID.
+
+        Depends only on theta, not on the sample chieff.  Call once per
+        theta and reuse across all samples.
+        """
+        return jnp.trapezoid(self._eval_unnorm(CHI_GRID, theta), CHI_GRID)
+
+    def __call__(self, chieff, theta, norm=None):
+        """
+        Evaluate the normalised spin PDF at chieff.
+
+        Parameters
+        ----------
+        norm : float or None
+            Pre-computed value from ``_norm(theta)``.  Supply this when
+            evaluating many samples at the same theta.
+        """
         p = self._eval_unnorm(chieff, theta)
-        p_grid = self._eval_unnorm(CHI_GRID, theta)
-        n = jnp.trapezoid(p_grid, CHI_GRID)
+        n = norm if norm is not None else self._norm(theta)
         return p / jnp.where(n > 0, n, 1.0)
+
 
 @dataclass
 class MixtureModel:
@@ -141,18 +184,47 @@ class MixtureModel:
             ts_list.append(theta[idx : idx + c.n_params])
             idx += c.n_params
 
+        # ------------------------------------------------------------------
+        # Compute mass and spin normalisation integrals once per theta.
+        #
+        # Both depend only on the population parameters theta, not on the
+        # individual samples (m1, chieff).  The previous code called
+        # c_m(m1, tm) and c_s(chieff, ts) which each re-evaluated a
+        # 500-point or 200-point grid integral internally on every call.
+        # With ~250k samples per likelihood evaluation (256 PE × ~1000 sel)
+        # this recomputed the same integral ~250k times identically.
+        #
+        # PairingModel normalisation integrates over q for each m1, making
+        # it genuinely sample-dependent; it stays inside the sample loop.
+        # ------------------------------------------------------------------
+        mass_norms = [
+            c._norm(tm_list[i])
+            for i, c in enumerate(self.mass_components)
+        ]
+        spin_norms = [
+            c._norm(ts_list[0] if self.shared_spin else ts_list[i])
+            for i, c in enumerate(self.spin_components)
+        ]
+
         out = 0.0
         for i in range(self.k):
+            # Mass component and parameters
             c_m = self.mass_components[i]
-            c_p = self.pairing_components[0] if self.shared_pairing else self.pairing_components[i]
-            c_s = self.spin_components[0] if self.shared_spin else self.spin_components[i]
+            tm = tm_list[i]  # <-- This was missing!
+            
+            # Pairing component and parameters
+            p_idx = 0 if self.shared_pairing else i
+            c_p = self.pairing_components[p_idx]
+            tp = tp_list[p_idx]
+            
+            # Spin component and parameters
+            s_idx = 0 if self.shared_spin else i
+            c_s = self.spin_components[s_idx]
+            ts = ts_list[s_idx]
 
-            tm = tm_list[i]
-            tp = tp_list[0] if self.shared_pairing else tp_list[i]
-            ts = ts_list[0] if self.shared_spin else ts_list[i]
-
-            mmin = M_LO
-            dmmin = 0.01
+            # Extract bounds if specified
+            mmin   = M_LO
+            dmmin  = 0.01
 
             if hasattr(c_m, "m_min_spec"):
                 mmin_idx = c_m.param_specs.index(c_m.m_min_spec)
@@ -161,9 +233,15 @@ class MixtureModel:
                 dmmin_idx = c_m.param_specs.index(c_m.dm_min_spec)
                 dmmin = tm[dmmin_idx]
 
-            out = out + w[i] * c_m(m1, tm) * c_p(m1, q, mmin, dmmin, tp) * c_s(chieff, ts)
+            # Compute the combined probability for this component
+            out = out + w[i] * (
+                c_m(m1, tm, norm=mass_norms[i])
+                * c_p(m1, q, mmin, dmmin, tp)
+                * c_s(chieff, ts, norm=spin_norms[s_idx])
+            )
 
         return out
+
 
 @dataclass
 class PopulationModel:

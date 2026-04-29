@@ -95,8 +95,8 @@ def run_sampler(method, likelihood, prior_transform, labels,
             if np.isfinite(val):
                 valid_count += 1
 
-            # Print an update every 500 evaluations
-            if eval_count % 500 == 0:
+            # Print an update every 500 evaluations, stopping after 5000
+            if eval_count % 500 == 0 and eval_count <= 5000:
                 print(f"  ... [Dynesty Setup] Likelihood calls: {eval_count} | Valid points found: {valid_count}", flush=True)
                 
             return val
