@@ -7,32 +7,7 @@ from .base import MassComponent, PairingModel, ParamSpec
 from .utils import sfilter_low, sfilter_high, MASS_GRID
 
 @dataclass
-class GaussianProcessMass(MassComponent):
-    m_min_spec: ParamSpec; m_max_spec: ParamSpec; dm_min_spec: ParamSpec; dm_max_spec: ParamSpec
-    amp1_spec: ParamSpec; amp2_spec: ParamSpec; ls1_spec: ParamSpec; ls2_spec: ParamSpec; n_spec: ParamSpec
-
-    @property
-    def param_specs(self):
-        return [self.m_min_spec, self.m_max_spec, self.dm_min_spec, self.dm_max_spec, self.amp1_spec, self.amp2_spec, self.ls1_spec, self.ls2_spec, self.n_spec]
-
-    def _eval_unnorm(self, m, t):
-        mmin, mmax, dmmin, dmmax = t[0], t[1], t[2], t[3]
-        amp1, amp2, ls1, ls2, n = t[4], t[5], t[6], t[7], t[8]
-
-        key = jax.random.PRNGKey(n.astype(jnp.int32))
-        kernel_1 = (amp1**2) * kernels.ExpSquared(scale=ls1)
-        kernel_2 = (amp2**2) * kernels.Matern52(scale=ls2)
-        kernel = kernel_1 + kernel_2 
-        
-        gp = GaussianProcess(kernel=kernel, X=MASS_GRID, mean=0.0, diag=0.001)
-        logpm_grid = gp.sample(key, shape=())
-        
-        S_grid = sfilter_low(MASS_GRID, mmin, dmmin) * sfilter_high(MASS_GRID, mmax, dmmax)
-        pm_grid = S_grid * jnp.exp(logpm_grid)
-        return jnp.interp(m, MASS_GRID, pm_grid, left=0.0, right=0.0)
-
-@dataclass
-class GaussianProcessMassExp(MassComponent):
+class GaussianProcessMass1D(MassComponent):
     m_min_spec: ParamSpec; m_max_spec: ParamSpec; dm_min_spec: ParamSpec; dm_max_spec: ParamSpec
     alpha_spec: ParamSpec; amp_spec: ParamSpec; ls_spec: ParamSpec
     y0_spec: ParamSpec; y1_spec: ParamSpec; y2_spec: ParamSpec; y3_spec: ParamSpec

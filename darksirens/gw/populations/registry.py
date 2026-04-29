@@ -2,7 +2,7 @@ import jax.numpy as jnp
 
 from .base import ParamSpec, MixtureModel, PopulationModel
 from .parametric import PowerLaw, BrokenPowerLaw, Gaussian, PowerLawPairing, TruncatedGaussianSpin
-from .gp import GaussianProcessMass, GaussianProcessMassExp, GaussianProcessMassRatio1D, GaussianProcessPairing2D
+from .gp import GaussianProcessMass1D, GaussianProcessMassRatio1D, GaussianProcessPairing2D
 
 
 def _pl(
@@ -61,29 +61,7 @@ def _spin(
         ParamSpec(sig_label, sig_lo, sig_hi)
     )
 
-def _gp(
-    mmin_label=r"$m_{\min}$", mmax_label=r"$m_{\max}$",
-    dmmin_label=r"$dm_{\min}$", dmmax_label=r"$dm_{\max}$",
-    amp1_label=r"$A_1$", amp2_label=r"$A_2$",
-    ls1_label=r"$l_1$", ls2_label=r"$l_2$", n_label=r"$n_{\rm seed}$",
-    mmin_lo=2.0, mmin_hi=10.0, mmax_lo=50.0, mmax_hi=100.0,
-    dmmin_lo=0.01, dmmin_hi=10.0, dmmax_lo=0.01, dmmax_hi=20.0,
-    amp_lo=0.1, amp_hi=5.0, ls_lo=1.0, ls_hi=20.0,
-    n_lo=0.0, n_hi=1e6
-):
-    return GaussianProcessMass(
-        ParamSpec(mmin_label, mmin_lo, mmin_hi),
-        ParamSpec(mmax_label, mmax_lo, mmax_hi),
-        ParamSpec(dmmin_label, dmmin_lo, dmmin_hi),
-        ParamSpec(dmmax_label, dmmax_lo, dmmax_hi),
-        ParamSpec(amp1_label, amp_lo, amp_hi),
-        ParamSpec(amp2_label, amp_lo, amp_hi),
-        ParamSpec(ls1_label, ls_lo, ls_hi),
-        ParamSpec(ls2_label, ls_lo, ls_hi),
-        ParamSpec(n_label, n_lo, n_hi)
-    )
-
-def _gp_experimental(
+def _gp_mass(
     mmin_label=r"$m_{\min}$", mmax_label=r"$m_{\max}$",
     dmmin_label=r"$\delta m_{\min}$", dmmax_label=r"$\delta m_{\max}$",
     alpha_label=r"$\alpha$", amp_label=r"$A$", ls_label=r"$l$",
@@ -93,7 +71,7 @@ def _gp_experimental(
     alpha_lo=-4.0, alpha_hi=12.0, amp_lo=0.01, amp_hi=5.0,
     ls_lo=0.05, ls_hi=1.0, y_lo=-7.0, y_hi=7.0
 ):
-    return GaussianProcessMassExp(
+    return GaussianProcessMass1D(
         ParamSpec(mmin_label, mmin_lo, mmin_hi),
         ParamSpec(mmax_label, mmax_lo, mmax_hi),
         ParamSpec(dmmin_label, dmmin_lo, dmmin_hi),
@@ -109,7 +87,7 @@ def _gp_experimental(
         ParamSpec(y_labels[10], y_lo, y_hi)
     )
 
-def _gp_pairing_experimental(
+def _gp_pairing(
     beta_label=r"$\beta_q$", amp_label=r"$A_q$", ls_label=r"$l_q$",
     y_labels=[r"$y_{q,%d}$" % i for i in range(5)],
     beta_lo=-4.0, beta_hi=12.0, amp_lo=0.01, amp_hi=5.0,
@@ -126,7 +104,7 @@ def _gp_pairing_experimental(
         ParamSpec(y_labels[4], y_lo, y_hi)
     )
 
-def _gp2d_pairing(
+def _gp_mass_pairing(
     beta_label=r"$\beta$", amp_label=r"$A_q$", ls_m_label=r"$l_{m,q}$", ls_q_label=r"$l_{q,q}$",
     y_labels=[r"$y_{q,%d}$" % i for i in range(16)],
     beta_lo=-4.0, beta_hi=12.0, amp_lo=0.01, amp_hi=3.0,
@@ -354,27 +332,21 @@ def _mixture_bpl2peaks1pl(shared_beta=False, shared_spin=False):
     )
     return MixtureModel(masses, pairings, spins)
 
-def _mixture_gp(shared_beta=True, shared_spin=True):
-    masses = [_gp()]
+def _mixture_gp_mass(shared_beta=True, shared_spin=True):
+    masses = [_gp_mass()]
     pairings = [_plpairing(beta_label=r"$\beta$")]
     spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
     return MixtureModel(masses, pairings, spins)
 
-def _mixture_gp_experimental(shared_beta=True, shared_spin=True):
-    masses = [_gp_experimental()]
-    pairings = [_plpairing(beta_label=r"$\beta$")]
+def _mixture_gp_mass_pairing(shared_beta=True, shared_spin=True):
+    masses = [_gp_mass()]
+    pairings = [_gp_pairing()]
     spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
     return MixtureModel(masses, pairings, spins)
 
-def _mixture_gp_pairing_experimental(shared_beta=True, shared_spin=True):
-    masses = [_gp_experimental()]
-    pairings = [_gp_pairing_experimental()]
-    spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
-    return MixtureModel(masses, pairings, spins)
-
-def _mixture_gp_full2d(shared_beta=True, shared_spin=True):
-    masses = [_gp_experimental()]
-    pairings = [_gp2d_pairing()]
+def _mixture_gp_mass_pairing_joint(shared_beta=True, shared_spin=True):
+    masses = [_gp_mass()]
+    pairings = [_gp_mass_pairing()]
     spins = [_spin(mu_label=r"$\mu_\chi$", sig_label=r"$\sigma_\chi$")]
     return MixtureModel(masses, pairings, spins)
 
@@ -389,10 +361,9 @@ _RAW_MODELS = {
     "twopowerlaws+peak":               (_mixture_2pl1peak,                "2PL+G"),
     "twopowerlaws+2peaks":             (_mixture_2pl2peaks,               "2PL+2G"),
     "twopowerlaws+3peaks":             (_mixture_2pl3peaks,               "2PL+3G"),
-    "gp":                              (_mixture_gp,                      "GP"),
-    "gp_experimental":                 (_mixture_gp_experimental,         "GP EXP"),
-    "gp_pairing_experimental":         (_mixture_gp_pairing_experimental, "GPxGP EXP"),
-    "gp_2D_experimental":              (_mixture_gp_full2d,               "GP 2D")
+    "gp_mass":                         (_mixture_gp_mass,                 "GP"),
+    "gp_mass_pairing":                 (_mixture_gp_mass_pairing,         "GPxGP"),
+    "gp_mass_pairing_joint":           (_mixture_gp_mass_pairing_joint,   "GP 2D"),
 }
 
 _MODEL_REGISTRY: dict[str, PopulationModel] = {}
@@ -516,18 +487,8 @@ def get_fixed_population_params(pop_model):
             35.0, 5.0,                            # G2
             3.0, 50.0, 100.0, 3.0, 10.0           # PL
         ]
-        
-    elif base_model == "gp":
-        n_comp = 1
-        weights = []  # k=1 means no weight parameters (f_i)
-        masses = [
-            5.0, 80.0, 3.0, 10.0, # m_min, m_max, dm_min, dm_max
-            1.0, 1.0,             # amp1, amp2 (Fiducial amplitudes)
-            5.0, 10.0,            # ls1, ls2 (Fiducial correlation lengths)
-            42.0                  # n_seed (Fiducial PRNG seed)
-        ]
 
-    elif base_model == "gp_experimental":
+    elif base_model == "gp_mass":
         n_comp = 1
         weights = []  # k=1 means no weight parameters
         masses = [
@@ -539,7 +500,7 @@ def get_fixed_population_params(pop_model):
             0.0, 0.0, 0.0, 0.0 # y0, y1, y2, y3, y4 (Zero deviations = pure power-law initially)
         ]
         
-    elif base_model == "gp_pairing_experimental":
+    elif base_model == "gp_mass_pairing":
         n_comp = 1
         weights = []  # k=1 means no weight parameters
         masses = [
@@ -551,7 +512,7 @@ def get_fixed_population_params(pop_model):
             0.0                   # y0-y10 (Zero deviations = pure power-law initially)
         ]
 
-    elif base_model == "gp_2D_experimental":
+    elif base_model == "gp_mass_pairing_joint":
         n_comp = 1
         weights = []  # k=1 means no weight parameters
         masses = [
@@ -568,13 +529,13 @@ def get_fixed_population_params(pop_model):
         
     # Assuming you have an if/elif chain for betas below the masses:
     
-    if base_model == "gp_pairing_experimental":
+    if base_model == "gp_mass_pairing":
         betas = [
             1.5,                  # beta_q (Fiducial slope favoring equal mass)
             1.0, 0.5,             # amp_q, ls_q (ls=0.5 covers half the (0,1] domain)
             0.0, 0.0, 0.0, 0.0, 0.0 # y_q0 - y_q4 (Zero deviations = pure q^beta initially)
         ]
-    elif base_model == "gp_2D_experimental":
+    elif base_model == "gp_mass_pairing_joint":
         betas = [
             0.0,           # beta (baseline flat mass ratio preference)
             1.0,           # amp_q (amplitude of GP deviations)
