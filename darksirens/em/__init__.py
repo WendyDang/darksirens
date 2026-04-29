@@ -19,9 +19,9 @@ completeness:
         where delta parametrises n(z) = n0 (1+z)^delta.
 
     dark_sirens  (default)
-        Realistic incomplete catalog; prior = mixture of catalog
-        density and a missing-galaxy completion term.  Both terms
-        use the same (1+z)^delta number-density weighting.
+        Realistic incomplete catalog; prior = z-dependent mixture of
+        catalog density and a missing-galaxy completion term, weighted
+        by C_eff(z) — the completeness curve at that specific redshift.
 
 Note on `delta`
 ---------------
@@ -36,6 +36,18 @@ Quickstart
 
     log_prior = get_redshift_prior("dark_sirens")
     lp = log_prior(z_samples, pix_samples, cosmo, survey, em_catalog)
+
+Correctness checks
+------------------
+Run normalisation checks once at startup to catch modelling errors early:
+
+    from redshift_prior.checks import run_all_checks
+
+    run_all_checks(
+        cosmo, survey, em_catalog,
+        test_pixels=jnp.array([0, 100, 500]),
+        raise_on_failure=True,
+    )
 
 Lower-level building blocks are also exported for custom workflows:
 
@@ -57,6 +69,7 @@ from .completion import (
     compute_lss_overdensity,
 )
 from .utils import zgrid, zMax, load_survey
+from . import checks
 
 __all__ = [
     # Factory
@@ -74,5 +87,6 @@ __all__ = [
     # Grid
     "zgrid",
     "zMax",
-    "load_survey"
+    # Checks
+    "checks",
 ]

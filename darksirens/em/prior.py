@@ -31,12 +31,19 @@ Three regimes are supported, ordered by how much EM information enters:
 3. ``"dark_sirens"``  (default / general case)
    EM catalog available but *incomplete*: the survey misses some
    fraction of galaxies.  The prior is a mixture of the catalog term
-   and a missing-galaxy term:
+   and a missing-galaxy term, with a *redshift-dependent* mixing weight:
 
-        p(z | pix) ∝ f * p_cat(z | pix) + (1 - f) * p_miss(z | pix)
+        p(z | pix) ∝ C_eff(z|pix) * p_cat(z|pix)
+                   + (1 - C_eff(z|pix)) * p_miss(z|pix)
 
-   where f is the pixel-level completeness fraction returned by
-   ``catalog_completion``.
+   C_eff(z|pix) is the completeness curve evaluated at the specific
+   redshift z rather than a scalar pixel-level average f.  This means
+   the catalog term is trusted where the survey is deep and the missing
+   term where it is shallow, at every redshift independently.
+
+   The scalar f returned by ``catalog_completion_vmap`` is still used
+   for diagnostics and selection-correction bookkeeping in the likelihood
+   but does not appear in the prior mixture.
 
 Usage
 -----
@@ -119,26 +126,37 @@ def _log_prior_dark_sirens(
     Dark-siren prior with catalog completion (the general case).
 
     Mixes the within-catalog galaxy density and the missing-galaxy
-    density according to the pixel completeness fraction f:
+    density using the *redshift-dependent* completeness curve C_eff(z):
 
-        p(z | pix) ∝ f * p_cat(z | pix)  +  (1 - f) * p_miss(z | pix)
+        p(z | pix) ∝ C_eff(z|pix) * p_cat(z|pix)
+                   + (1 - C_eff(z|pix)) * p_miss(z|pix)
 
-    f and p_miss are computed by ``catalog_completion_vmap``, which
-    supports both isotropic completion (alpha=0) and LSS-modulated
-    completion (alpha>0) transparently.  Both p_cat and p_miss use
-    the same (1+z)^delta number-density weighting; merger rate
-    evolution is handled elsewhere.
+    C_eff(z) is the third return value of ``catalog_completion_vmap``.
+    It is evaluated at the specific redshift z of each sample, so the
+    mixing weight tracks the actual survey depth at that redshift rather
+    than using a volume-averaged scalar f.
+
+    C_eff is derived from the differential completeness (dN_obs/dN_exp
+    per shell), which responds locally to survey depth without smearing
+    over-densities to higher redshifts.
+
+    The scalar f (first return value) is computed but not used here; it
+    remains available for diagnostics and selection-correction bookkeeping
+    in the likelihood.
     """
-    f, p_miss, _ = catalog_completion_vmap(z, pix, cosmo, survey, em_catalog)
+    # f: scalar completeness fraction (not used as mixing weight here)
+    # p_miss: normalised missing-galaxy PDF at z
+    # C_z: redshift-dependent completeness curve at z  ← mixing weight
+    _, p_miss, C_z = catalog_completion_vmap(z, pix, cosmo, survey, em_catalog)
 
-    log_f   = jnp.where(f > 0.0,       jnp.log(f),        -jnp.inf)
-    log_1mf = jnp.where(f < 1.0,       jnp.log1p(-f),     -jnp.inf)
+    log_C   = jnp.where(C_z > 0.0,   jnp.log(C_z),       -jnp.inf)
+    log_1mC = jnp.where(C_z < 1.0,   jnp.log1p(-C_z),    -jnp.inf)
     log_p_miss = jnp.where(p_miss > 0.0, jnp.log(p_miss), -jnp.inf)
     log_p_cat  = log_catalog_prior_vmap(z, pix, cosmo, survey, em_catalog)
 
     return logsumexp(
-        jnp.stack([log_f + log_p_cat,
-                   log_1mf + log_p_miss]),
+        jnp.stack([log_C   + log_p_cat,
+                   log_1mC + log_p_miss]),
         axis=0,
     )
 
@@ -178,8 +196,9 @@ def get_redshift_prior(model: str):
             Use as an optimistic / upper-bound scenario.
 
         ``"dark_sirens"``
-            General incomplete-catalog prior (catalog + missing-galaxy
-            mixture).  The recommended default for realistic surveys.
+            General incomplete-catalog prior with redshift-dependent
+            mixing weight C_eff(z).  The recommended default for
+            realistic surveys.
 
     Returns
     -------

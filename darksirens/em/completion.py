@@ -12,33 +12,47 @@ count per redshift shell scales as:
 The exponent is delta, not (delta-1).  Merger rate evolution is handled
 elsewhere in the pipeline and must not appear here.
 
-The model has two regimes controlled by `alpha`:
+Completeness model
+------------------
+Completeness is computed as a *differential* ratio per redshift shell:
 
-    alpha = 0  →  isotropic completion
-                   Missing galaxies are distributed like the mean
-                   expected galaxy density, irrespective of local
-                   large-scale structure.
+    C_iso(z) = clip( (dN_obs/dz)(z) / (dN_exp/dz)(z) , 0, 1 ) * P_rolloff(z)
 
-    alpha = 1  →  LSS-aware completion
-                   The missing density is modulated by the local
-                   galaxy overdensity δ_g(pix, z), weighted by the
-                   galaxy bias of the missing population b_miss.
+Both numerator and denominator are smoothed with a Gaussian kernel of
+width ``_SIGMA_SMOOTH`` before the ratio is formed.  This removes the
+smearing artifact of the previous cumulative approach: with cumulative
+counts, a galaxy over-density at z=0.3 would inflate C_iso for all z>0.3
+even if the survey is incomplete at z=0.5.  The differential ratio
+responds locally and faithfully tracks the actual survey depth.
 
-    0 < alpha < 1 → Linear blend of the two.
+The kernel-smoothed expected dN/dz is independent of pixel and is lifted
+out of the vmap alongside N_exp (see Performance notes below).
+
+Per-pixel observed dN/dz is estimated via a Gaussian KDE over the
+galaxy positions in the pixel, using the same kernel width, so the ratio
+is a proper density estimator throughout.
+
+Mixing weight
+-------------
+The redshift prior mixes the catalog and missing-galaxy terms using
+C_eff(z) — the full redshift-dependent completeness curve — rather than a
+scalar pixel-level fraction f.  This is physically more accurate: the
+catalog term is trusted where the survey is deep and the missing term
+where it is shallow, at every redshift independently.
+
+The scalar f is still returned for diagnostics and for selection-correction
+bookkeeping in the likelihood.
 
 Performance notes
 -----------------
-``_cumulative_N_exp`` depends only on (H0, Om0, n0, delta, apix) — not on
-pixel or redshift — and must be called *once per likelihood evaluation*,
-before any vmap.  Calling it inside the vmap would recompute the same
-1000-point integral ~250 000 times per likelihood call (256 PE samples ×
-~1000 selection samples).
+``_smooth_expected_dndz`` depends only on (H0, Om0, n0, delta, apix) and
+must be called *once per likelihood evaluation* before any vmap.
 
-The cumulative integral itself is computed via ``jnp.cumsum`` over the
-trapezoidal increments, which produces a single O(N) scan.  The previous
-implementation used a Python for-loop over zgrid that unrolled into 1000
-separate JAX ops at trace time, making compilation extremely slow and the
-XLA graph enormous.
+The Gaussian kernel matrix for smoothing is O(N_grid^2) = O(10^6) but is
+applied once as a single matrix multiply.  The previous Python for-loop
+unrolled into 1000 separate JAX ops at trace time; this is replaced by
+``jnp.cumsum`` for N_exp (used in the scalar entry point) and by a KDE
+projection for the differential completeness.
 
 Public API
 ----------
@@ -47,7 +61,7 @@ catalog_completion(z, pix, cosmo, survey, em_catalog)
 
 catalog_completion_vmap(z, pix, cosmo, survey, em_catalog)
     Same signature, vectorised over arrays of (z, pix) pairs.
-    Computes N_exp once internally, then vmaps the inner function.
+    Computes dN_exp_smooth once internally, then vmaps the inner function.
 
 compute_lss_overdensity(zgals, nside)
     Pre-computes delta_g(pix, z) on the global zgrid for all HEALPix pixels.
@@ -65,21 +79,50 @@ from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog
 from .utils import zgrid
 
 
+# Gaussian kernel width for smoothing both dN_obs/dz and dN_exp/dz.
+# Should be comparable to the typical photo-z uncertainty of the survey.
+# Larger values give smoother completeness curves; smaller values preserve
+# finer redshift structure at the cost of noisier per-pixel estimates.
+_SIGMA_SMOOTH: float = 0.05
+
+
 # ------------------------------------------------------------
-# Internal helpers: observed cumulative counts
+# Internal helpers: observed dN/dz via Gaussian KDE
 # ------------------------------------------------------------
 
 @jit
-def _Ngals_lessthanz_grid(pix: int, zgals) -> jnp.ndarray:
+def _kde_dndz_obs(pix: int, zgals) -> jnp.ndarray:
     """
-    Cumulative observed galaxy count N_obs(<z) for pixel `pix` on zgrid.
+    Kernel density estimate of the observed dN_obs/dz for pixel `pix`
+    on zgrid, using a Gaussian kernel of width ``_SIGMA_SMOOTH``.
+
+    Each galaxy at redshift z_i contributes a Gaussian centred at z_i.
+    The result has units of galaxies per unit redshift, consistently
+    with the smoothed expected dN_exp/dz from ``_smooth_expected_dndz``.
 
     Returns
     -------
     jnp.ndarray of shape (len(zgrid),)
     """
-    zs = zgals[pix]                          # (Ngal,)
-    mask = zs[None, :] < zgrid[:, None]      # (Nz, Ngal)
+    zs = zgals[pix]                                   # (Ngal,)
+    # (Nz, Ngal): Gaussian kernel evaluated at each (zgrid_i, z_j) pair
+    K = jnp.exp(
+        -0.5 * ((zgrid[:, None] - zs[None, :]) / _SIGMA_SMOOTH) ** 2
+    ) / (jnp.sqrt(2.0 * jnp.pi) * _SIGMA_SMOOTH)
+    return K.sum(axis=1)                              # (Nz,)
+
+
+_kde_dndz_obs_vmap = jit(
+    vmap(_kde_dndz_obs, in_axes=(0, None), out_axes=0)
+)
+
+
+# For the LSS overdensity we still need cumulative counts
+@jit
+def _Ngals_lessthanz_grid(pix: int, zgals) -> jnp.ndarray:
+    """Cumulative observed count N_obs(<z) on zgrid for pixel `pix`."""
+    zs = zgals[pix]
+    mask = zs[None, :] < zgrid[:, None]
     return mask.sum(axis=1).astype(float)
 
 
@@ -89,44 +132,45 @@ _Ngals_lessthanz_grid_vmap = jit(
 
 
 # ------------------------------------------------------------
-# Expected cumulative counts — lifted out of the vmap
+# Smoothed expected dN/dz — lifted out of the vmap
 # ------------------------------------------------------------
 
 @jit
-def _cumulative_N_exp(
+def _smooth_expected_dndz(
     cosmo: CosmoParams,
     survey: SurveyParams,
     em_catalog: EMCatalog,
 ) -> jnp.ndarray:
     """
-    Expected cumulative galaxy count N_exp(<z) on zgrid.
+    Gaussian-kernel-smoothed expected dN_exp/dz on zgrid.
 
     Depends only on (H0, Om0, n0, delta, apix) — independent of pixel
     and redshift — and must be called *once per likelihood evaluation*
     before any vmap over (z, pix) pairs.
 
-    Uses a cumulative trapezoid sum (jnp.cumsum) in a single O(N) pass.
-    This replaces the previous Python for-loop which unrolled into 1000
-    separate JAX ops at trace time.
+    The smooth model dN_exp/dz is convolved with the same Gaussian kernel
+    used for the observed KDE, so the ratio dN_obs/dN_exp is a consistent
+    completeness estimator throughout.
 
     Returns
     -------
     jnp.ndarray of shape (len(zgrid),)
-        N_exp(<zgrid[i]) for each grid point, offset by +1 to guard
-        against division by zero at z -> 0.
+        Smoothed expected galaxy density in galaxies per unit redshift.
     """
     H0, Om0 = cosmo.H0, cosmo.Om0
     n0, delta, apix = survey.n0, survey.delta, em_catalog.apix
 
-    # Integrand: expected galaxy density per unit redshift
+    # Raw expected density (galaxies per unit z)
     dN_dz = n0 * apix * dV_of_z(zgrid, H0, Om0) * (1.0 + zgrid) ** delta
 
-    # Cumulative trapezoid: (f[i] + f[i+1])/2 * dz[i], accumulated left to right
-    dz    = jnp.diff(zgrid)                                          # (N-1,)
-    trap  = 0.5 * (dN_dz[:-1] + dN_dz[1:]) * dz                    # (N-1,)
-    N_cum = jnp.concatenate([jnp.array([0.0]), jnp.cumsum(trap)])   # (N,)
+    # Gaussian kernel matrix: K[i, j] = G(zgrid[i] - zgrid[j]; sigma_smooth)
+    # Row-normalised so that convolution preserves the integral.
+    K = jnp.exp(
+        -0.5 * ((zgrid[:, None] - zgrid[None, :]) / _SIGMA_SMOOTH) ** 2
+    )
+    K = K / K.sum(axis=1, keepdims=True)
 
-    return 1.0 + N_cum   # +1 guards against zero denominator at z->0
+    return K @ dN_dz   # (Nz,)
 
 
 # ------------------------------------------------------------
@@ -180,14 +224,14 @@ def _survey_rolloff(z, z50: float, w: float) -> jnp.ndarray:
 
 
 # ------------------------------------------------------------
-# Inner completion kernel — takes precomputed N_exp_grid
+# Inner completion kernel — takes precomputed dN_exp_smooth
 # ------------------------------------------------------------
 
 @jit
 def _catalog_completion_inner(
     z: float,
     pix: int,
-    N_exp_grid: jnp.ndarray,
+    dN_exp_smooth: jnp.ndarray,
     cosmo: CosmoParams,
     survey: SurveyParams,
     em_catalog: EMCatalog,
@@ -195,19 +239,30 @@ def _catalog_completion_inner(
     """
     Core completion computation for a single (z, pix) pair.
 
-    Accepts ``N_exp_grid`` as a pre-computed argument so it is not
-    recomputed for every element of the vmap.  Use the public functions
-    ``catalog_completion`` or ``catalog_completion_vmap`` instead of
-    calling this directly.
+    Accepts ``dN_exp_smooth`` as a pre-computed argument (from
+    ``_smooth_expected_dndz``) so it is not recomputed for every element
+    of the vmap.  Use the public functions ``catalog_completion`` or
+    ``catalog_completion_vmap`` rather than calling this directly.
+
+    Completeness is estimated as the differential ratio:
+
+        C_iso(z) = clip( KDE_obs(z) / dN_exp_smooth(z) , 0, 1 ) * rolloff(z)
+
+    where KDE_obs is a Gaussian KDE over the per-pixel galaxy positions.
+    This responds locally to survey depth, unlike a cumulative ratio which
+    smears over-densities to all higher redshifts.
 
     Returns
     -------
     f : float
         Pixel-level completeness fraction in [0, 1].
+        Computed from the volume-integrated missing density; used for
+        diagnostics and selection-correction bookkeeping.
     p_miss : float
         Normalised missing-galaxy PDF evaluated at z.
     C : float
-        Completeness curve C(z | pix) evaluated at z.
+        Redshift-dependent completeness C_eff(z | pix) evaluated at z.
+        Used as the mixing weight in the redshift prior.
     """
     H0, Om0 = cosmo.H0, cosmo.Om0
     z50, w, delta, b_miss, alpha = (
@@ -215,12 +270,13 @@ def _catalog_completion_inner(
     )
     zgals, delta_g_pix_z = em_catalog.zgals, em_catalog.delta_g_pix_z
 
-    # --- Step 1: Observed cumulative counts on zgrid ---
-    N_obs = _Ngals_lessthanz_grid(pix, zgals)           # (Nz,)
+    # --- Step 1: Per-pixel observed dN/dz via Gaussian KDE ---
+    dN_obs = _kde_dndz_obs(pix, zgals)                 # (Nz,)
 
-    # --- Step 2: Isotropic completeness curve ---
-    # N_exp_grid was computed once outside the vmap.
-    C_iso = jnp.clip(N_obs / N_exp_grid, 0.0, 1.0) * _survey_rolloff(zgrid, z50, w)
+    # --- Step 2: Differential completeness curve ---
+    # Guard against zero expected density at the survey boundary.
+    dN_exp_safe = jnp.where(dN_exp_smooth > 0.0, dN_exp_smooth, 1.0)
+    C_iso = jnp.clip(dN_obs / dN_exp_safe, 0.0, 1.0) * _survey_rolloff(zgrid, z50, w)
 
     # --- Step 3: Physical volume element ---
     # (1+z)^delta is galaxy number-density evolution; merger rate is elsewhere.
@@ -238,11 +294,13 @@ def _catalog_completion_inner(
     rho_miss_eff = (1.0 - alpha) * rho_miss_iso + alpha * rho_miss_lss
     rho_miss_eff = jnp.clip(rho_miss_eff, 0.0, jnp.inf)
 
-    # --- Step 7: Completeness curve ---
+    # --- Step 7: Effective completeness curve C_eff(z) ---
     pvol_safe = jnp.where(pvol > 0.0, pvol, 1.0)
     C_eff = jnp.clip(1.0 - rho_miss_eff / pvol_safe, 0.0, 1.0)
 
-    # --- Step 8: Pixel-level completeness fraction ---
+    # --- Step 8: Scalar pixel-level completeness fraction (diagnostics) ---
+    # f is the volume-averaged completeness; it is NOT used as the mixing
+    # weight in the prior — C_eff(z) is used there instead.
     V_miss = jnp.trapezoid(rho_miss_eff, zgrid)
     V_max  = jnp.trapezoid(pvol, zgrid)
     f = 1.0 - V_miss / V_max
@@ -258,7 +316,7 @@ def _catalog_completion_inner(
     return f, p_miss_z, C_z
 
 
-# vmap over (z, pix); N_exp_grid, cosmo, survey, em_catalog are held constant.
+# vmap over (z, pix); dN_exp_smooth, cosmo, survey, em_catalog are constant.
 _catalog_completion_inner_vmap = vmap(
     _catalog_completion_inner,
     in_axes=(0, 0, None, None, None, None),
@@ -282,19 +340,20 @@ def catalog_completion(
     Characterise catalog incompleteness at redshift z in pixel pix.
 
     Scalar entry point.  For vectorised use over many (z, pix) pairs
-    prefer ``catalog_completion_vmap``, which computes N_exp only once.
+    prefer ``catalog_completion_vmap``, which computes dN_exp_smooth
+    only once.
 
     Returns
     -------
     f : float
-        Pixel-level completeness fraction in [0, 1].
+        Scalar pixel-level completeness fraction in [0, 1] (diagnostics).
     p_miss : float
         Normalised missing-galaxy PDF evaluated at z.
     C : float
-        Completeness curve C(z | pix) evaluated at z.
+        Redshift-dependent completeness C_eff(z | pix) evaluated at z.
     """
-    N_exp_grid = _cumulative_N_exp(cosmo, survey, em_catalog)
-    return _catalog_completion_inner(z, pix, N_exp_grid, cosmo, survey, em_catalog)
+    dN_exp_smooth = _smooth_expected_dndz(cosmo, survey, em_catalog)
+    return _catalog_completion_inner(z, pix, dN_exp_smooth, cosmo, survey, em_catalog)
 
 
 @jit
@@ -308,7 +367,7 @@ def catalog_completion_vmap(
     """
     Vectorised catalog completion over arrays of (z, pix) pairs.
 
-    Computes ``N_exp_grid`` once before the vmap so it is shared across
+    Computes ``dN_exp_smooth`` once before the vmap so it is shared across
     all (z, pix) evaluations rather than recomputed for each one.
 
     Parameters
@@ -319,7 +378,13 @@ def catalog_completion_vmap(
 
     Returns
     -------
-    f, p_miss, C : jnp.ndarray, each shape (N,)
+    f : jnp.ndarray, shape (N,)
+        Scalar pixel-level completeness fractions (diagnostics / selection).
+    p_miss : jnp.ndarray, shape (N,)
+        Normalised missing-galaxy PDF evaluated at each z.
+    C : jnp.ndarray, shape (N,)
+        Redshift-dependent completeness C_eff(z | pix) at each z.
+        This is the quantity used as the mixing weight in the prior.
     """
-    N_exp_grid = _cumulative_N_exp(cosmo, survey, em_catalog)
-    return _catalog_completion_inner_vmap(z, pix, N_exp_grid, cosmo, survey, em_catalog)
+    dN_exp_smooth = _smooth_expected_dndz(cosmo, survey, em_catalog)
+    return _catalog_completion_inner_vmap(z, pix, dN_exp_smooth, cosmo, survey, em_catalog)
