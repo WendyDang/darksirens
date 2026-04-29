@@ -120,10 +120,20 @@ def load_gw_samples(gw_path, nsamp=64):
     else:
         p_pe = np.array(p_pe).reshape(nEvents, nsamps_file)[:, :nsamp].flatten()
     
-    p_pe_chieff = np.exp(spin_prior._logprob(chieff,m1source,m2source,0.99))
+    p_pe_chieff = np.exp(spin_prior._logprob(chieff, m1source, m2source, 0.99))
     p_pe = p_pe * p_pe_chieff
-    p_pe = p_pe/np.sum(p_pe)
-    print(p_pe.sum())
+
+    # Normalise per event so that each event's importance weights are
+    # independent.  The per-event marginal likelihood is
+    #   (1/nsamp) Σ_j  p_pop(θ_j) / p_pe(θ_j)
+    # and dividing by the per-event sum makes the effective weights
+    # dimensionless while preserving the correct relative scale within
+    # each event.  Global normalisation (over nEvents*nsamp) would
+    # introduce a factor of nEvents into every per-event sum, biasing
+    # log μ and therefore the posterior on H0.
+    p_pe = p_pe.reshape(nEvents, nsamp)
+    p_pe = p_pe / p_pe.sum(axis=1, keepdims=True)
+    p_pe = p_pe.flatten()
     
     # Convert to jnp in requested order: m1det, m2det, dL, chieff, ra, ...
     return (
@@ -318,15 +328,21 @@ def load_selection_samples(
     decsels    = dec_all[detected]
     pdraw_sel  = pdraw_all[detected]
 
-    Ndet = len(m1detsels)
-    
-    pop_wt = pdraw_sel
-    unnorm_wt = pop_wt/pdraw_sel
-    sum_norm_wt = unnorm_wt / np.sum(unnorm_wt)
-    pdraw_wt = pop_wt / (np.sum(unnorm_wt) / ndraw)
-    
-    pdraw_wt = pdraw_wt/np.sum(pdraw_wt)
-    print(pdraw_wt.shape, ndraw, pdraw_wt.sum())
+    # The selection integral requires
+    #
+    #   μ = (1/N_draw) Σ_det  p_pop(d_i|λ) / p_draw(d_i)
+    #
+    # so p_draw must retain its physical scale (per unit volume per unit
+    # mass per unit time).  The previous code normalised pdraw_wt to
+    # sum=1, which removed that scale and rendered log μ parameter-
+    # independent — effectively turning the selection correction into a
+    # constant that cannot track changes in the population model.
+    #
+    # We keep pdraw_sel as-is (already in physical units after the
+    # Jacobian and time corrections applied above) and do not renormalise.
+    pdraw_wt = pdraw_sel
+    print(f"    Selection samples: Ndet={len(pdraw_wt)}, Ndraw={ndraw}, "
+          f"mean(p_draw)={pdraw_wt.mean():.3e}")
 
     # Convert to jnp in requested order: m1detsels, m2detsels, dLsels, chieffsels, rasels, ...
     return (

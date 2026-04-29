@@ -85,6 +85,22 @@ from .utils import zgrid
 # finer redshift structure at the cost of noisier per-pixel estimates.
 _SIGMA_SMOOTH: float = 0.05
 
+# Gaussian convolution kernel precomputed once at module load time.
+# K[i, j] = G(zgrid[i] - zgrid[j]; _SIGMA_SMOOTH), row-normalised.
+# Shape (Nz, Nz) = (1000, 1000) — 8 MB for float64.
+# Rebuilding this 1000×1000 matrix on every likelihood call (as a local
+# variable inside _smooth_expected_dndz) costs O(N²) allocation and
+# floating-point work for no benefit: zgrid and _SIGMA_SMOOTH are both
+# module-level constants that never change.
+_K_SMOOTH: jnp.ndarray = None  # initialised below after zgrid is imported
+
+
+def _build_kernel() -> jnp.ndarray:
+    K = jnp.exp(
+        -0.5 * ((zgrid[:, None] - zgrid[None, :]) / _SIGMA_SMOOTH) ** 2
+    )
+    return K / K.sum(axis=1, keepdims=True)  # row-normalise
+
 
 # ------------------------------------------------------------
 # Internal helpers: observed dN/dz via Gaussian KDE
@@ -130,8 +146,21 @@ _Ngals_lessthanz_grid_vmap = jit(
 
 
 # ------------------------------------------------------------
-# Smoothed expected dN/dz — lifted out of the vmap
+# Precomputed grids bundle — lifted out of the vmap
 # ------------------------------------------------------------
+
+from typing import NamedTuple
+
+class _CompletionGrids(NamedTuple):
+    """
+    Pixel-independent arrays computed once per likelihood evaluation.
+
+    Both fields have shape (len(zgrid),).  Passing them as a NamedTuple
+    lets the vmap treat the whole bundle with in_axes=None, broadcasting
+    it as a constant across all (z, pix) pairs.
+    """
+    dN_exp_smooth: jnp.ndarray  # smoothed expected galaxy density [gal/dz]
+    pvol:          jnp.ndarray  # dV_c/dz * (1+z)^delta [galaxy-weighted vol]
 
 
 def _smooth_expected_dndz(
@@ -142,39 +171,46 @@ def _smooth_expected_dndz(
     """
     Gaussian-kernel-smoothed expected dN_exp/dz on zgrid.
 
-    Depends only on (H0, Om0, n0, delta, apix) — independent of pixel
-    and redshift — and must be called *once per likelihood evaluation*
-    before any vmap over (z, pix) pairs.
-
-    The smooth model dN_exp/dz is convolved with the same Gaussian kernel
-    used for the observed KDE, so the ratio dN_obs/dN_exp is a consistent
-    completeness estimator throughout.
-
-    Returns
-    -------
-    jnp.ndarray of shape (len(zgrid),)
-        Smoothed expected galaxy density in galaxies per unit redshift.
+    Depends only on (H0, Om0, n0, delta, apix).  Uses the module-level
+    kernel matrix ``_K_SMOOTH`` so no matrix is allocated here.
     """
     H0, Om0 = cosmo.H0, cosmo.Om0
     n0, delta, apix = survey.n0, survey.delta, em_catalog.apix
 
-    # Raw expected density (galaxies per unit z)
     dN_dz = n0 * apix * dV_of_z(zgrid, H0, Om0) * (1.0 + zgrid) ** delta
+    return _K_SMOOTH @ dN_dz
 
-    # Gaussian kernel matrix: K[i, j] = G(zgrid[i] - zgrid[j]; sigma_smooth)
-    # Row-normalised so that convolution preserves the integral.
-    K = jnp.exp(
-        -0.5 * ((zgrid[:, None] - zgrid[None, :]) / _SIGMA_SMOOTH) ** 2
+
+def _pvol_grid(cosmo: CosmoParams, survey: SurveyParams) -> jnp.ndarray:
+    """
+    Galaxy-number-density-weighted comoving volume element on zgrid.
+
+        pvol(z) = dV_c/dz * (1+z)^delta
+
+    Depends only on (H0, Om0, delta) — independent of pixel and
+    redshift — and must NOT be recomputed inside the vmap.
+    """
+    return dV_of_z(zgrid, cosmo.H0, cosmo.Om0) * (1.0 + zgrid) ** survey.delta
+
+
+def _precompute_grids(
+    cosmo: CosmoParams,
+    survey: SurveyParams,
+    em_catalog: EMCatalog,
+) -> _CompletionGrids:
+    """
+    Compute all pixel-independent grids once per likelihood evaluation.
+    Pass the result to ``_catalog_completion_inner_vmap`` as a constant.
+    """
+    return _CompletionGrids(
+        dN_exp_smooth=_smooth_expected_dndz(cosmo, survey, em_catalog),
+        pvol=_pvol_grid(cosmo, survey),
     )
-    K = K / K.sum(axis=1, keepdims=True)
-
-    return K @ dN_dz   # (Nz,)
 
 
 # ------------------------------------------------------------
 # LSS overdensity pre-computation (run once at startup)
 # ------------------------------------------------------------
-@jit
 def compute_lss_overdensity(zgals, nside: int) -> jnp.ndarray:
     """
     Compute the galaxy overdensity delta_g(pix, z) on the global zgrid
@@ -182,6 +218,14 @@ def compute_lss_overdensity(zgals, nside: int) -> jnp.ndarray:
 
     Call once during catalog initialisation and store the result in
     EMCatalog.delta_g_pix_z.
+
+    Not JIT-compiled: ``hp.nside2npix`` is a Python/NumPy function that
+    returns a concrete Python int.  Decorating with ``@jit`` is fragile
+    because JAX would need to retrace whenever ``nside`` changes, and
+    calling a NumPy function inside a JIT boundary produces confusing
+    errors if a traced integer is ever passed accidentally.  Since this
+    function is called exactly once at startup the compilation overhead
+    is irrelevant; the inner vmapped helper is JIT-compiled separately.
 
     Parameters
     ----------
@@ -229,95 +273,83 @@ def _survey_rolloff(z, z50: float, w: float) -> jnp.ndarray:
 def _catalog_completion_inner(
     z: float,
     pix: int,
-    dN_exp_smooth: jnp.ndarray,
-    cosmo: CosmoParams,
+    grids: _CompletionGrids,
     survey: SurveyParams,
     em_catalog: EMCatalog,
 ):
     """
     Core completion computation for a single (z, pix) pair.
 
-    Accepts ``dN_exp_smooth`` as a pre-computed argument (from
-    ``_smooth_expected_dndz``) so it is not recomputed for every element
-    of the vmap.  Use the public functions ``catalog_completion`` or
-    ``catalog_completion_vmap`` rather than calling this directly.
+    Accepts ``grids`` (a ``_CompletionGrids`` NamedTuple) containing all
+    pixel-independent arrays precomputed outside the vmap.  In particular:
 
-    Completeness is estimated as the differential ratio:
+    - ``grids.pvol`` replaces the previous ``dV_of_z(zgrid, H0, Om0) *
+      (1+z)^delta`` call that was executed for every (z, pix) element.
+      Since pvol depends only on (H0, Om0, delta) it must be computed
+      once per likelihood call, not once per sample.
 
-        C_iso(z) = clip( KDE_obs(z) / dN_exp_smooth(z) , 0, 1 ) * rolloff(z)
+    - ``grids.dN_exp_smooth`` is the smoothed expected dN/dz, also
+      pixel-independent and lifted for the same reason.
 
-    where KDE_obs is a Gaussian KDE over the per-pixel galaxy positions.
-    This responds locally to survey depth, unlike a cumulative ratio which
-    smears over-densities to all higher redshifts.
+    Use the public wrappers ``catalog_completion`` / ``catalog_completion_vmap``
+    rather than calling this directly.
 
     Returns
     -------
     f : float
-        Pixel-level completeness fraction in [0, 1].
-        Computed from the volume-integrated missing density; used for
-        diagnostics and selection-correction bookkeeping.
+        Pixel-level completeness fraction in [0, 1] (diagnostics).
     p_miss : float
         Normalised missing-galaxy PDF evaluated at z.
     C : float
         Redshift-dependent completeness C_eff(z | pix) evaluated at z.
-        Used as the mixing weight in the redshift prior.
     """
-    H0, Om0 = cosmo.H0, cosmo.Om0
     z50, w, delta, b_miss, alpha = (
         survey.z50, survey.w, survey.delta, survey.b_miss, survey.alpha,
     )
     zgals, delta_g_pix_z = em_catalog.zgals, em_catalog.delta_g_pix_z
 
+    dN_exp_smooth = grids.dN_exp_smooth
+    pvol          = grids.pvol
+
     # --- Step 1: Per-pixel observed dN/dz via Gaussian KDE ---
     dN_obs = _kde_dndz_obs(pix, zgals)                 # (Nz,)
 
     # --- Step 2: Differential completeness curve ---
-    # Guard against zero expected density at the survey boundary.
     dN_exp_safe = jnp.where(dN_exp_smooth > 0.0, dN_exp_smooth, 1.0)
     C_iso = jnp.clip(dN_obs / dN_exp_safe, 0.0, 1.0) * _survey_rolloff(zgrid, z50, w)
 
-    # --- Step 3: Physical volume element ---
-    # (1+z)^delta is galaxy number-density evolution; merger rate is elsewhere.
-    pvol = dV_of_z(zgrid, H0, Om0) * (1.0 + zgrid) ** delta
-
-    # --- Step 4: Isotropic missing physical density ---
+    # --- Step 3: Isotropic missing physical density ---
     rho_miss_iso = (1.0 - C_iso) * pvol
 
-    # --- Step 5: LSS-modulated missing density ---
+    # --- Step 4: LSS-modulated missing density ---
     delta_g_z = delta_g_pix_z[pix]
-    delta_g_z = delta_g_z - jnp.mean(delta_g_z)        # mean-subtract within pixel
+    delta_g_z = delta_g_z - jnp.mean(delta_g_z)
     rho_miss_lss = rho_miss_iso * (1.0 + b_miss * delta_g_z)
 
-    # --- Step 6: Effective missing density (alpha blend) ---
+    # --- Step 5: Effective missing density (alpha blend) ---
     rho_miss_eff = (1.0 - alpha) * rho_miss_iso + alpha * rho_miss_lss
     rho_miss_eff = jnp.clip(rho_miss_eff, 0.0, jnp.inf)
 
-    # --- Step 7: Effective completeness curve C_eff(z) ---
+    # --- Step 6: Effective completeness curve C_eff(z) ---
     pvol_safe = jnp.where(pvol > 0.0, pvol, 1.0)
     C_eff = jnp.clip(1.0 - rho_miss_eff / pvol_safe, 0.0, 1.0)
 
-    # --- Step 8: Scalar pixel-level completeness fraction (diagnostics) ---
-    # f is the volume-averaged completeness; it is NOT used as the mixing
-    # weight in the prior — C_eff(z) is used there instead.
-    V_miss = jnp.trapezoid(rho_miss_eff, zgrid)
-    V_max  = jnp.trapezoid(pvol, zgrid)
-    f = 1.0 - V_miss / V_max
+    # --- Step 7: Scalar completeness fraction (diagnostics) ---
+    f = 1.0 - jnp.trapezoid(rho_miss_eff, zgrid) / jnp.trapezoid(pvol, zgrid)
 
-    # --- Step 9: Normalised missing PDF ---
+    # --- Step 8: Normalised missing PDF ---
     norm_factor = jnp.trapezoid(rho_miss_eff, zgrid)
     norm_factor = jnp.where(norm_factor > 0.0, norm_factor, 1.0)
     p_miss_grid = rho_miss_eff / norm_factor
 
-    p_miss_z = jnp.interp(z, zgrid, p_miss_grid)
-    C_z      = jnp.interp(z, zgrid, C_eff)
-
-    return f, p_miss_z, C_z
+    return f, jnp.interp(z, zgrid, p_miss_grid), jnp.interp(z, zgrid, C_eff)
 
 
-# vmap over (z, pix); dN_exp_smooth, cosmo, survey, em_catalog are constant.
+# _CompletionGrids is a NamedTuple (pytree); in_axes=None broadcasts
+# the whole bundle as a constant across all (z, pix) elements.
 _catalog_completion_inner_vmap = vmap(
     _catalog_completion_inner,
-    in_axes=(0, 0, None, None, None, None),
+    in_axes=(0, 0, None, None, None),
     out_axes=(0, 0, 0),
 )
 
@@ -338,7 +370,7 @@ def catalog_completion(
     Characterise catalog incompleteness at redshift z in pixel pix.
 
     Scalar entry point.  For vectorised use over many (z, pix) pairs
-    prefer ``catalog_completion_vmap``, which computes dN_exp_smooth
+    prefer ``catalog_completion_vmap``, which computes the grid bundle
     only once.
 
     Returns
@@ -350,8 +382,8 @@ def catalog_completion(
     C : float
         Redshift-dependent completeness C_eff(z | pix) evaluated at z.
     """
-    dN_exp_smooth = _smooth_expected_dndz(cosmo, survey, em_catalog)
-    return _catalog_completion_inner(z, pix, dN_exp_smooth, cosmo, survey, em_catalog)
+    grids = _precompute_grids(cosmo, survey, em_catalog)
+    return _catalog_completion_inner(z, pix, grids, survey, em_catalog)
 
 
 @jit
@@ -365,8 +397,8 @@ def catalog_completion_vmap(
     """
     Vectorised catalog completion over arrays of (z, pix) pairs.
 
-    Computes ``dN_exp_smooth`` once before the vmap so it is shared across
-    all (z, pix) evaluations rather than recomputed for each one.
+    Computes the grid bundle (``dN_exp_smooth`` and ``pvol``) once before
+    the vmap so both are shared across all (z, pix) evaluations.
 
     Parameters
     ----------
@@ -376,13 +408,11 @@ def catalog_completion_vmap(
 
     Returns
     -------
-    f : jnp.ndarray, shape (N,)
-        Scalar pixel-level completeness fractions (diagnostics / selection).
-    p_miss : jnp.ndarray, shape (N,)
-        Normalised missing-galaxy PDF evaluated at each z.
-    C : jnp.ndarray, shape (N,)
-        Redshift-dependent completeness C_eff(z | pix) at each z.
-        This is the quantity used as the mixing weight in the prior.
+    f, p_miss, C : jnp.ndarray, each shape (N,)
     """
-    dN_exp_smooth = _smooth_expected_dndz(cosmo, survey, em_catalog)
-    return _catalog_completion_inner_vmap(z, pix, dN_exp_smooth, cosmo, survey, em_catalog)
+    grids = _precompute_grids(cosmo, survey, em_catalog)
+    return _catalog_completion_inner_vmap(z, pix, grids, survey, em_catalog)
+
+
+# Initialise the module-level kernel matrix now that zgrid is available.
+_K_SMOOTH = _build_kernel()

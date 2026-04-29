@@ -78,7 +78,11 @@ def log_catalog_prior(
     # (1+z)^delta is the number-density evolution; merger rate is elsewhere.
     vol_weight = dV_of_z(zs, H0, Om0) * (1.0 + zs) ** delta
     w = wgals[pix] * vol_weight
-    w = w / jnp.sum(w)
+    # Guard: if all galaxies in the pixel have zero weight (e.g. empty pixel
+    # or all photo-z outside the survey range), division by zero would produce
+    # NaN which propagates silently into logsumexp and corrupts the likelihood.
+    w_sum = jnp.sum(w)
+    w = w / jnp.where(w_sum > 0.0, w_sum, 1.0)
 
     return logsumexp(jnp.log(w) + norm.logpdf(z, zs, sig))
 

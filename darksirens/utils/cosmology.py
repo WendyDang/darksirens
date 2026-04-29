@@ -27,7 +27,18 @@ speed_of_light = constants.c.to('km/s').value
 zgrid = np.expm1(np.linspace(np.log(1), np.log(zMax+1), 1000))
 
 rs = []
-Om0grid = jnp.linspace(Om0Planck-0.1,Om0Planck+0.1,200)
+# The prior in inference/prior.py covers [Om0Planck-0.1, Om0Planck+0.1].
+# The interpolation grid must extend strictly beyond those bounds so that
+# sampler proposals at or near the prior boundary never extrapolate outside
+# the grid (which would return silently wrong distances).  A pad of 0.05
+# on each side is sufficient for any reasonable sampler step size.
+_OM0_PRIOR_HALF_WIDTH = 0.1
+_OM0_GRID_PAD = 0.05
+Om0grid = jnp.linspace(
+    Om0Planck - _OM0_PRIOR_HALF_WIDTH - _OM0_GRID_PAD,
+    Om0Planck + _OM0_PRIOR_HALF_WIDTH + _OM0_GRID_PAD,
+    200,
+)
 for Om0 in Om0grid:
     cosmo = FlatLambdaCDM(H0=H0Planck,Om0=Om0)
     rs.append(cosmo.comoving_distance(zgrid).to(u.Mpc).value)
