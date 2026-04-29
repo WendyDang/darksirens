@@ -111,7 +111,10 @@ def _log_prior_complete_catalog(
     from the catalog; use ``"dark_sirens"`` for the realistic incomplete
     case.
     """
-    return log_catalog_prior_vmap(z, pix, cosmo, survey, em_catalog)
+    log_p_cat  = log_catalog_prior_vmap(z, pix, cosmo, survey, em_catalog)
+    log_p_cat = jnp.nan_to_num(log_p_cat, neginf=-jnp.inf)
+    
+    return log_p_cat
 
 
 @jit
@@ -153,6 +156,9 @@ def _log_prior_dark_sirens(
     log_1mC = jnp.where(C_z < 1.0,   jnp.log1p(-C_z),    -jnp.inf)
     log_p_miss = jnp.where(p_miss > 0.0, jnp.log(p_miss), -jnp.inf)
     log_p_cat  = log_catalog_prior_vmap(z, pix, cosmo, survey, em_catalog)
+    
+    log_p_miss = jnp.nan_to_num(log_p_miss, neginf=-jnp.inf)
+    log_p_cat = jnp.nan_to_num(log_p_cat, neginf=-jnp.inf)
 
     return logsumexp(
         jnp.stack([log_C   + log_p_cat,

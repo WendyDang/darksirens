@@ -73,23 +73,48 @@ def run_sampler(method, likelihood, prior_transform, labels,
     # --------------------------------------------------------
     # dynesty
     # --------------------------------------------------------
+
     elif method == "dynesty":
         from dynesty import NestedSampler
         from dynesty.utils import resample_equal
 
-        # 1. JIT compile the single-point likelihood for maximum sequential speed.
-        # We do NOT use vmap here because Dynesty evaluates points one at a time.
+        # 1. JIT compile the single-point likelihood.
         fast_likelihood = jax.jit(likelihood)
+        
+        # Tracker variables to peek inside Dynesty
+        eval_count = 0
+        valid_count = 0
 
+        # 3. WRAPPER: Strip JAX DeviceArrays and track evaluations
+        def dynesty_loglike(theta):
+            nonlocal eval_count, valid_count
+            eval_count += 1
+            
+            val = float(np.asarray(fast_likelihood(jnp.asarray(theta))))
+            
+            if np.isfinite(val):
+                valid_count += 1
+
+            # Print an update every 500 evaluations
+            if eval_count % 500 == 0:
+                print(f"  ... [Dynesty Setup] Likelihood calls: {eval_count} | Valid points found: {valid_count}", flush=True)
+                
+            return val
+
+        def dynesty_ptform(u):
+            return np.asarray(prior_transform(jnp.asarray(u)))
+
+        print(f"[*] Asking Dynesty to find {opts.nlive} initial live points. This may take a minute...", flush=True)
         sampler = NestedSampler(
-            fast_likelihood, 
-            prior_transform, 
+            dynesty_loglike, 
+            dynesty_ptform,  
             ndims,
             bound="multi", 
             sample="rwalk",
             nlive=opts.nlive
         )
         
+        print(f"[*] Initial live points found! Starting main nested sampling loop...", flush=True)
         sampler.run_nested(dlogz=opts.dlogz, print_progress=opts.show_progress)
         res = sampler.results
 
@@ -98,7 +123,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
         finite_logw = logw[np.isfinite(logw)]
         if finite_logw.size == 0:
             raise RuntimeError("dynesty returned no finite posterior weights.")
-        # Normalize weights in log-space
+        
         weights = np.exp(logw - np.max(finite_logw))
         weight_sum = float(np.sum(weights))
         if not np.isfinite(weight_sum) or weight_sum <= 0.0:
@@ -106,7 +131,6 @@ def run_sampler(method, likelihood, prior_transform, labels,
         weights /= weight_sum
         samples = resample_equal(res.samples, weights)
 
-        # Evidence
         logZ = float(res.logz[-1])
         logZerr = float(res.logzerr[-1])
 
@@ -115,7 +139,6 @@ def run_sampler(method, likelihood, prior_transform, labels,
             "logZ": logZ,
             "logZerr": logZerr
         }
-
     # --------------------------------------------------------
     # emcee
     # --------------------------------------------------------
