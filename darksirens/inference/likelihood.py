@@ -102,9 +102,12 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
     zgals_pe = to_jax("zgals_pe")
     dzgals_pe = to_jax("dzgals_pe")
     wgals_pe = to_jax("wgals_pe")
+    ngals_pe = to_jax("ngals_pe")
+    
     zgals_sel = to_jax("zgals_sel")
     dzgals_sel = to_jax("dzgals_sel")
     wgals_sel = to_jax("wgals_sel")
+    ngals_sel = to_jax("ngals_sel")
 
     if fixed_parameter_values is None:
         fixed_parameter_values = {}
@@ -170,10 +173,10 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
         )
         
         em_catalog_pe = EMCatalog(
-            apix=apix, zgals=zgals_pe, dzgals=dzgals_pe, wgals=wgals_pe, delta_g_pix_z=delta_g_pix_z
+            apix=apix, zgals=zgals_pe, dzgals=dzgals_pe, wgals=wgals_pe, ngals=ngals_pe, delta_g_pix_z=delta_g_pix_z
         )
         em_catalog_sel = EMCatalog(
-            apix=apix, zgals=zgals_sel, dzgals=dzgals_sel, wgals=wgals_sel, delta_g_pix_z=delta_g_pix_z
+            apix=apix, zgals=zgals_sel, dzgals=dzgals_sel, wgals=wgals_sel, ngals=ngals_sel, delta_g_pix_z=delta_g_pix_z
         )
 
         gw_pe = GWEvent(
@@ -198,12 +201,14 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
             zgals=lax.optimization_barrier(em_catalog_pe.zgals),
             dzgals=lax.optimization_barrier(em_catalog_pe.dzgals),
             wgals=lax.optimization_barrier(em_catalog_pe.wgals),
+            ngals=lax.optimization_barrier(em_catalog_pe.ngals),
             delta_g_pix_z=lax.optimization_barrier(em_catalog_pe.delta_g_pix_z),
         )
         em_catalog_sel = em_catalog_sel._replace(
             zgals=lax.optimization_barrier(em_catalog_sel.zgals),
             dzgals=lax.optimization_barrier(em_catalog_sel.dzgals),
             wgals=lax.optimization_barrier(em_catalog_sel.wgals),
+            ngals=lax.optimization_barrier(em_catalog_sel.ngals),
             delta_g_pix_z=lax.optimization_barrier(em_catalog_sel.delta_g_pix_z),
         )
 

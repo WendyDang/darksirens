@@ -21,6 +21,7 @@ class EMCatalog(NamedTuple):
     zgals: Any
     dzgals: Any
     wgals: Any
+    ngals: Any
     delta_g_pix_z: Any
 
 class GWEvent(NamedTuple):

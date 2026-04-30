@@ -50,10 +50,15 @@ def load_all_data(opts):
         zgals_pe = zgals[pixels_pe]
         dzgals_pe = dzgals[pixels_pe]
         wgals_pe = wgals[pixels_pe]
-
+        ngals_pe = ngals[pixels_pe]
+        
         zgals_sel = zgals[pixels_sel]
         dzgals_sel = dzgals[pixels_sel]
         wgals_sel = wgals[pixels_sel]
+        ngals_sel = ngals[pixels_sel]
+        
+        print("samples" + str(ngals_pe.sum()))
+        print("selection" + str(ngals_sel.sum()))
 
     # 6. Pack into dictionary
     data = dict(
@@ -67,6 +72,7 @@ def load_all_data(opts):
         zgals_pe=zgals_pe,
         dzgals_pe=dzgals_pe,
         wgals_pe=wgals_pe,
+        ngals=ngals_pe,
 
         # Selection samples
         m1detsels=m1detsels,
@@ -78,6 +84,7 @@ def load_all_data(opts):
         zgals_sel=zgals_sel,
         dzgals_sel=dzgals_sel,
         wgals_sel=wgals_sel,
+        ngals_sel=ngals_sel,
 
         # Survey metadata
         nEvents=nEvents,

@@ -26,7 +26,6 @@ from jax.scipy.stats import norm
 from darksirens.utils.cosmology import dV_of_z
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog
 
-
 @jit
 def log_catalog_prior(
     z: float,
@@ -34,49 +33,96 @@ def log_catalog_prior(
     cosmo: CosmoParams,
     survey: SurveyParams,
     em_catalog: EMCatalog,
+    sigma_kde: float = 0.0025
 ) -> float:
-    """
+    r"""
     Log of the EM-catalog redshift prior at redshift z for pixel pix.
 
-    Models the within-pixel galaxy distribution as a weighted Gaussian
-    mixture:
+    Computes $\ln p_{\text{gal}}(z_k | \Omega_p)$ for a single discrete Gravitational 
+    Wave (GW) posterior sample $z_k$ using an exact KDE overlap integration method.
 
-        p_cat(z | pix) ∝ Σ_i w_i N(z; z_i, σ_i)
+    Notes
+    -----
+    When cross-correlating a broad continuous GW posterior with a highly precise 
+    discrete galaxy catalog (e.g., DESI), evaluating discrete GW samples at the 
+    exact catalog redshifts causes numerical failure because the instrumental 
+    errors are nearly Dirac delta functions. 
 
-    where w_i any per-galaxy weights from the catalog (e.g. photo-z quality,
-    luminosity).
+    To fix this, we evaluate the exact overlap integral between the GW posterior 
+    KDE and the discrete catalog. Due to Gaussian overlap symmetry, applying a KDE 
+    bandwidth to the discrete GW samples is mathematically identical to applying 
+    the KDE bandwidth to the catalog galaxies and evaluating at the discrete GW points:
+
+    $$ \int p_{\text{GW}}(z) p_{\text{gal}}(z) \, dz = \frac{1}{K} \sum_k \left[ \sum_{i \in \Omega_p} \tilde{W}_i \, \mathcal{N}(z_k; z_i, \sigma_{\text{eff}, i}) \right] $$
+
+    Where the effective variance is the sum in quadrature of the instrumental 
+    error and the LSS smoothing kernel:
+    $$ \sigma_{\text{eff}, i} = \sqrt{\sigma_{\text{cat}, i}^2 + \sigma_{\text{kde}}^2} $$
+
+    The individual galaxy weights $W_i$ inside the pixel are calculated by scaling 
+    the base completeness/luminosity weights $w_i$ by the cosmological volume element:
+    $$ W_i = w_i \cdot \frac{dV_c}{dz}(z_i | H_0, \Omega_m) $$
+    
+    These weights are then locally normalized to sum to 1 inside the pixel:
+    $$ \tilde{W}_i = \frac{W_i}{\sum_{j} W_j} $$
+
+    Finally, the logsumexp trick is used to stably compute the log probability:
+    $$ \ln p_{\text{gal}}(z_k | \Omega_p) = \text{logsumexp} \left( \ln \tilde{W}_i + \ln \mathcal{N}(z_k; z_i, \sigma_{\text{eff}, i}) \right) $$
 
     Parameters
     ----------
     z : float
-        Redshift at which to evaluate the prior.
+        Redshift $z_k$ at which to evaluate the prior (a single discrete GW sample).
     pix : int
-        HEALPix pixel index.
+        HEALPix pixel index $\Omega_p$.
     cosmo : CosmoParams
-        Cosmological parameters (H0, Om0).
+        Cosmological parameters ($H_0, \Omega_m$) for volume weighting.
     survey : SurveyParams
         Survey parameters.
     em_catalog : EMCatalog
-        EM galaxy catalog arrays (zgals, dzgals, wgals, …).
+        EM galaxy catalog arrays containing redshifts, errors, and base weights.
 
     Returns
     -------
     float
-        log p_cat(z | pix).
+        The log probability $\ln p_{\text{gal}}(z_k | \Omega_p)$.
     """
+    H0, Om0 = cosmo.H0, cosmo.Om0
     zgals, dzgals, wgals = em_catalog.zgals, em_catalog.dzgals, em_catalog.wgals
 
-    zs = zgals[pix]        # (Ngal,)
-    sig = dzgals[pix]      # (Ngal,)
-    w = wgals[pix]
-    
-    w = w / jnp.where(w.sum() > 0, w.sum(), 1.0)
+    zs = zgals[pix]         # z_i: (N_max_gals,)
+    sig = dzgals[pix]       # \sigma_{cat, i}: (N_max_gals,) Raw instrumental errors
+    w = wgals[pix]          # w_i: (N_max_gals,) Base weights
 
-    return logsumexp(jnp.log(w) + norm.logpdf(z, zs, sig))
+    # 1. Calculate the log of the volume weights based on the current cosmology
+    log_vol_weights = jnp.log(dV_of_z(zs, H0, Om0))
+    
+    # 2. Add it to the base log-weights
+    safe_w = jnp.where(w > 0, w, 1.0)
+    log_base_w = jnp.where(w > 0, jnp.log(safe_w), -jnp.inf)
+    
+    log_total_w = log_base_w + log_vol_weights
+    
+    # 3. Normalize the new log-weights locally inside the pixel
+    log_w_norm = log_total_w - logsumexp(log_total_w)
+    
+    # ---------------------------------------------------------
+    # 4. THE KDE OVERLAP INTEGRAL
+    # ---------------------------------------------------------
+    # We apply a KDE bandwidth to the galaxies to represent the 
+    # continuous structure of the dark matter halos/LSS. 
+    # dz = 0.0025 roughly corresponds to ~10 Mpc clustering scale at low redshift.
+    
+    # Sum the variances in quadrature (Analytical integral of two Gaussians)
+    sig_eff = jnp.sqrt(sig**2 + sigma_kde**2)
+    
+    # Evaluate the discrete GW sample z_k against the smoothed catalog in log-space
+    return logsumexp(log_w_norm + norm.logpdf(z, zs, sig_eff))
 
 
 # Vectorised over (z, pix) pairs — both vmapped simultaneously so the
 # call signature matches all prior assembly functions.
+# Outer function takes z_array (N_samples,) and pix_array (N_samples,)
 log_catalog_prior_vmap = jit(
     vmap(log_catalog_prior, in_axes=(0, 0, None, None, None), out_axes=0)
 )
