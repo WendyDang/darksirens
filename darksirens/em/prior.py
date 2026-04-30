@@ -25,9 +25,6 @@ Three regimes are supported, ordered by how much EM information enters:
 
         p(z | pix) = p_cat(z | pix)
 
-   Galaxy weights carry the number-density factor (1+z)^delta.
-   This is the idealised limit of the general model.
-
 3. ``"dark_sirens"``  (default / general case)
    EM catalog available but *incomplete*: the survey misses some
    fraction of galaxies.  The prior is a mixture of the catalog term
@@ -106,14 +103,26 @@ def _log_prior_complete_catalog(
 
         p(z | pix) = p_cat(z | pix)
 
-    Galaxy mixture weights carry the number-density evolution factor
-    (1+z)^delta.  This is an upper bound on the information available
-    from the catalog; use ``"dark_sirens"`` for the realistic incomplete
-    case.
+    Empty-pixel fallback
+    --------------------
+    At high HEALPix resolutions (nside >= 512 is common for GW
+    localization maps) most pixels contain zero catalog galaxies, so
+    log_p_cat = -inf for those pixels.  Without a fallback the entire
+    selection integral and all PE weights are -inf, making every
+    likelihood evaluation return -inf and the sampler finding no valid
+    live points.
+
+    For pixels with no galaxies the complete-catalog assumption reduces
+    to having no redshift information from the catalog, which is
+    physically equivalent to the agnostic volume prior.  We therefore
+    fall back to log_volume_prior whenever log_p_cat is not finite.
+
+    Note: dark_sirens (the full model) does not have this problem
+    because C_eff(z) = 0 for empty pixels automatically routes the
+    prior entirely to p_miss, which is always finite.
     """
-    log_p_cat  = log_catalog_prior_vmap(z, pix, cosmo, survey, em_catalog)
-    log_p_cat = jnp.nan_to_num(log_p_cat, neginf=-jnp.inf)
-    
+    log_p_cat = log_catalog_prior_vmap(z, pix, cosmo, survey, em_catalog)
+
     return log_p_cat
 
 

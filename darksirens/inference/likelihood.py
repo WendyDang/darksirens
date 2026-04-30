@@ -196,10 +196,14 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
 
         em_catalog_pe = em_catalog_pe._replace(
             zgals=lax.optimization_barrier(em_catalog_pe.zgals),
+            dzgals=lax.optimization_barrier(em_catalog_pe.dzgals),
+            wgals=lax.optimization_barrier(em_catalog_pe.wgals),
             delta_g_pix_z=lax.optimization_barrier(em_catalog_pe.delta_g_pix_z),
         )
         em_catalog_sel = em_catalog_sel._replace(
             zgals=lax.optimization_barrier(em_catalog_sel.zgals),
+            dzgals=lax.optimization_barrier(em_catalog_sel.dzgals),
+            wgals=lax.optimization_barrier(em_catalog_sel.wgals),
             delta_g_pix_z=lax.optimization_barrier(em_catalog_sel.delta_g_pix_z),
         )
 
