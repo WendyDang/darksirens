@@ -1,102 +1,136 @@
-import os
+import sys
 from argparse import ArgumentParser
-import glob
+from pathlib import Path
 
 import numpy as np
 import h5py
-
-from tqdm import tqdm
-
-from pathos.multiprocessing import ProcessingPool, Pool
-import tqdm_pathos
-
 import healpy as hp
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+def plot_diagnostics(counts, zs, npix, save_dir, nside):
+    """Generates and saves diagnostic plots for the survey data."""
+    print("Generating diagnostic plots...")
+    
+    # 1. Skymap of Galaxies
+    plt.figure(figsize=(10, 6))
+    # Replace 0s with NaN so empty pixels show up as gray instead of the lowest color map value
+    map_to_plot = np.where(counts > 0, counts, np.nan)
+    hp.mollview(map_to_plot, title=f"Galaxy Density Skymap (Nside={nside})", cmap='viridis', return_projected_map=False)
+    plt.savefig(save_dir / f'skymap_density_nside_{nside}.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    # 2. Redshift Distribution
+    plt.figure(figsize=(8, 5))
+    plt.hist(zs, bins=100, color='royalblue', edgecolor='black', alpha=0.7)
+    plt.title("Survey Redshift Distribution")
+    plt.xlabel("Redshift (z)")
+    plt.ylabel("Count")
+    plt.grid(axis='y', alpha=0.3)
+    # Redshift is independent of nside, but we tag the filename to keep batch runs organized
+    plt.savefig(save_dir / f'redshift_distribution_nside_{nside}.png', dpi=300)
+    plt.close()
+
+    # 3. Galaxies per Pixel Distribution
+    plt.figure(figsize=(8, 5))
+    valid_counts = counts[counts > 0]
+    plt.hist(valid_counts, bins=50, color='darkorange', edgecolor='black', alpha=0.7)
+    plt.title(f"Galaxies per Pixel Distribution (Nside={nside}, Non-empty pixels)")
+    plt.xlabel("Number of Galaxies")
+    plt.ylabel("Frequency")
+    plt.yscale('log') # Log scale is usually better for density distributions
+    plt.grid(axis='y', alpha=0.3)
+    plt.savefig(save_dir / f'pixel_occupancy_distribution_nside_{nside}.png', dpi=300)
+    plt.close()
+    
+    print(f"Plots saved to {save_dir}")
 
 def main():
-
-    optp = ArgumentParser()
-    optp.add_argument("--survey_path", help="path to survey data")
-    optp.add_argument("--save_path", help="where to save", default='./')
-    optp.add_argument("--nside", type=int, default=64)
-
+    optp = ArgumentParser(description="Process galaxy survey data into HEALPix pixels.")
+    optp.add_argument("--survey_path", required=True, help="Path to the input HDF5 survey data")
+    optp.add_argument("--save_path", default='./', help="Directory to save the outputs")
+    optp.add_argument("--nside", type=int, default=64, help="HEALPix Nside parameter")
+    optp.add_argument("--add_plots", action="store_true", help="Generate diagnostic plots")
+    
     opts = optp.parse_args()
 
-    survey_path = opts.survey_path
-    save_path = opts.save_path
+    survey_file = Path(opts.survey_path)
+    save_dir = Path(opts.save_path)
     nside = opts.nside
 
-    with h5py.File(survey_path, 'r') as f:
-        ras_ = np.array(f['TARGET_RA'])*np.pi/180
-        decs_ = np.array(f['TARGET_DEC'])*np.pi/180
-        zs_ = np.array(f['Z'])
-        ddzs_ = np.array(f['ZERR'])
-        wts_ = np.array(f['WEIGHT'])
-
-    ngals = len(ras_)
-
-    npix = hp.pixelfunc.nside2npix(nside)
-    pixgrid = np.arange(npix)
-
-    ind = hp.pixelfunc.ang2pix(nside,np.pi/2-decs_,ras_)
-
-    def calculate_galaxies_pix(pix):
-        cats = []
-        ngalaxies = []
-        idx = np.where(ind == pix)[0]
-        return idx
-
-    num_cores = int(len(os.sched_getaffinity(0)))
-    num_threads = int(2*num_cores-2)
-    print("using multiprocessing with " + str(num_threads) + " threads")
+    # 1. Validation
+    if not survey_file.is_file():
+        print(f"ERROR: Survey file not found at {survey_file}")
+        sys.exit(1)
     
-    p = ProcessingPool(num_threads)
-    results = tqdm_pathos.map(calculate_galaxies_pix, list(pixgrid))
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    ngalaxies_ = []
-    for pix in tqdm(pixgrid):
-        idx = results[pix]
-        gals = zs_[idx]
-        ngals = gals.shape[0]
-        ngalaxies_.append(ngals)
-    maxgals = max(ngalaxies_)
-    print(maxgals)
+    # 2. Load Data
+    print(f"Loading data from {survey_file}...")
+    with h5py.File(survey_file, 'r') as f:
+        ras = np.array(f['TARGET_RA']) * np.pi / 180
+        decs = np.array(f['TARGET_DEC']) * np.pi / 180
+        zs = np.array(f['Z'])
+        ddzs = np.array(f['ZERR'])
+        wts = np.array(f['WEIGHT'])
 
-    cats = []
-    dzcats = []
-    dwcats = []
-    ngalaxies = []
-    for pix in tqdm(pixgrid):
-        idx = results[pix]
-        gals = zs_[idx]
-        dgals = ddzs_[idx]
-        wgals = wts_[idx]
-        ngals = gals.shape[0]
+    ngals_total = len(ras)
+    print(f"Loaded {ngals_total} galaxies.")
+
+    # 3. Calculate HEALPix Indices
+    npix = hp.nside2npix(nside)
+    ind = hp.ang2pix(nside, np.pi/2 - decs, ras)
+
+    # Calculate counts per pixel instantly
+    counts = np.bincount(ind, minlength=npix)
+    maxgals = counts.max()
+    print(f"Maximum galaxies in a single pixel: {maxgals}")
+
+    # 4. Pre-allocate dense arrays with padding values
+    # Padding defaults: z=100, dz=1, w=0
+    print("Pre-allocating arrays...")
+    cats_out = np.full((npix, maxgals), 100.0, dtype=zs.dtype)
+    dzcats_out = np.full((npix, maxgals), 1.0, dtype=ddzs.dtype)
+    dwcats_out = np.full((npix, maxgals), 0.0, dtype=wts.dtype)
+
+    # 5. Fast Vectorized Grouping
+    print("Grouping galaxies into pixels...")
+    sort_idx = np.argsort(ind)
+    sorted_ind = ind[sort_idx]
+    
+    # Sort the data arrays based on pixel index
+    sorted_zs = zs[sort_idx]
+    sorted_ddzs = ddzs[sort_idx]
+    sorted_wts = wts[sort_idx]
+
+    # Find the boundary indices for each unique pixel
+    unique_pix, start_indices = np.unique(sorted_ind, return_index=True)
+
+    # Fill the pre-allocated arrays
+    for i, pix in enumerate(tqdm(unique_pix, desc="Populating dense arrays")):
+        start = start_indices[i]
+        end = start_indices[i+1] if i + 1 < len(start_indices) else len(sorted_ind)
+        count = end - start
         
-        zgals = [gals]
-        dzgals = [dgals]
-        dwgals = [wgals]
+        cats_out[pix, :count] = sorted_zs[start:end]
+        dzcats_out[pix, :count] = sorted_ddzs[start:end]
+        dwcats_out[pix, :count] = sorted_wts[start:end]
 
-        if ngals < maxgals:
-            lenght = int(maxgals - ngals)
-            zgals.append(100*np.ones(lenght))
-            dzgals.append(1*np.ones(lenght))
-            dwgals.append(np.zeros(lenght))
-
-        cats.append(np.concatenate(zgals))
-        dzcats.append(np.concatenate(dzgals))
-        dwcats.append(np.concatenate(dwgals))
-        ngalaxies.append(ngals)
-
-    del results
-    p.close()
-
-    with h5py.File(save_path + 'lognormal_pixelated_nside_'+str(nside)+'_galaxies.h5', 'w') as f:
+    # 6. Save outputs
+    out_file = save_dir / f'catalog_pixelated_nside_{nside}.h5'
+    print(f"Saving to {out_file}...")
+    with h5py.File(out_file, 'w') as f:
         f.attrs['nside'] = nside
-        f.create_dataset('zgals', data=np.asarray(cats), compression='gzip', shuffle=False)
-        f.create_dataset('dzgals', data=np.asarray(dzcats), compression='gzip', shuffle=False)
-        f.create_dataset('wgals', data=np.asarray(dwcats), compression='gzip', shuffle=False)
-        f.create_dataset('ngals', data=np.asarray(ngalaxies), compression='gzip', shuffle=False)
-        
+        f.create_dataset('zgals', data=cats_out, compression='gzip', shuffle=True)
+        f.create_dataset('dzgals', data=dzcats_out, compression='gzip', shuffle=True)
+        f.create_dataset('wgals', data=dwcats_out, compression='gzip', shuffle=True)
+        f.create_dataset('ngals', data=counts, compression='gzip', shuffle=True)
+    
+    print("Data processing complete!")
+
+    # 7. Plotting (Optional)
+    if opts.add_plots:
+        plot_diagnostics(counts, zs, npix, save_dir, nside)
+
 if __name__ == "__main__":
     main()
-
