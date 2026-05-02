@@ -22,7 +22,6 @@ from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.gw.populations import get_fixed_population_params
 
 from darksirens.em import load_survey
-from darksirens.em import zgrid, compute_lss_overdensity
 
 from darksirens.inference.likelihood import darksiren_log_likelihood
 from darksirens.inference.data import load_all_data
@@ -96,8 +95,11 @@ def main():
     optp.add_argument("--fix_population", type=str_to_bool, default=False)
     optp.add_argument("--fix_cosmology", type=str_to_bool, default=False)
     optp.add_argument("--fix_survey", type=str_to_bool, default=False)
-    optp.add_argument("--ignore_completeness", type=str_to_bool, default=False)
     
+    optp.add_argument("--ignore_completeness", type=str_to_bool, default=False)
+    optp.add_argument("--use_LSS", type=str_to_bool, default=False)
+    optp.add_argument("--sigma_kernel", type=float, default=0.0)
+
     optp.add_argument("--nsamp", type=int, default=256)
 
     optp.add_argument("--emcee", type=str_to_bool, default=False)
@@ -110,7 +112,6 @@ def main():
     optp.add_argument("--nsteps", type=int, default=1000)
     optp.add_argument("--seed", type=int, default=22)
     optp.add_argument("--show_progress", type=str_to_bool, default=True)
-    optp.add_argument("--use_LSS", type=str_to_bool, default=False)
     optp.add_argument("--max_samples", type=int, default=1_000_000)
 
     opts = optp.parse_args()
@@ -145,26 +146,6 @@ def main():
     # --------------------------------------------------------
     print(f"[*] Loading GW and Catalog data...")
     data = load_all_data(opts)
-    
-    nEvents = data.get("nEvents", "Unknown")
-    nside = data.get("nside", "N/A")
-    print(f"    - Data loaded. Found {nEvents} GW events.")
-    print(f"    - HEALPix nside detected: {nside}")
-
-    # --------------------------------------------------------
-    # LSS overdensity field (Handle memory carefully)
-    # --------------------------------------------------------
-    print(f"[*] Preparing LSS/Overdensity Field...")
-    if opts.universe_model in GALAXY_AWARE_MODELS and opts.use_LSS:
-        print(f"    - Calculating high-resolution overdensity grid...")
-        delta_g_pix_z = compute_lss_overdensity(data["zgals"], nside)
-    else:
-        print(f"    - Non-LSS run. Creating memory-efficient dummy (1, {len(zgrid)}) grid.")
-        # We use shape (1, nz) to satisfy JAX broadcasting without 93GB allocations
-        delta_g_pix_z = jnp.zeros((1, len(zgrid)))
-
-    mem_usage = delta_g_pix_z.nbytes / 1e9
-    print(f"    - Overdensity array shape: {delta_g_pix_z.shape} ({mem_usage:.4f} GB)")
 
     # --------------------------------------------------------
     # Build parameter space
@@ -189,7 +170,6 @@ def main():
     likelihood = make_likelihood(
         opts=opts,
         data=data,
-        delta_g_pix_z=delta_g_pix_z,
         pop_params_fid=pop_params_fid
     )
 

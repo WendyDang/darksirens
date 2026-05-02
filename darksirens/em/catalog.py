@@ -33,7 +33,6 @@ def log_catalog_prior(
     cosmo: CosmoParams,
     survey: SurveyParams,
     em_catalog: EMCatalog,
-    sigma_kde: float = 0.0025
 ) -> float:
     r"""
     Log of the EM-catalog redshift prior at redshift z for pixel pix.
@@ -88,7 +87,7 @@ def log_catalog_prior(
         The log probability $\ln p_{\text{gal}}(z_k | \Omega_p)$.
     """
     H0, Om0 = cosmo.H0, cosmo.Om0
-    zgals, dzgals, wgals = em_catalog.zgals, em_catalog.dzgals, em_catalog.wgals
+    zgals, dzgals, wgals, sigma_kde = em_catalog.zgals, em_catalog.dzgals, em_catalog.wgals, em_catalog.sigma_kernel
 
     zs = zgals[pix]         # z_i: (N_max_gals,)
     sig = dzgals[pix]       # \sigma_{cat, i}: (N_max_gals,) Raw instrumental errors

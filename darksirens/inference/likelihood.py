@@ -85,7 +85,7 @@ def darksiren_log_likelihood(
     return jnp.where(jnp.isfinite(ll), ll, -jnp.inf)
 
 
-def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_values=None):
+def make_likelihood(opts, data, pop_params_fid, fixed_parameter_values=None):
     """
     Enhanced wrapper that converts None values into dummy JAX arrays 
     to ensure compatibility with JIT, and dynamically builds PyTrees.
@@ -95,7 +95,7 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
         val = data.get(key)
         return jnp.asarray(val) if val is not None else jnp.array([0.0])
 
-    nEvents, nsamp, Ndraw, apix = data["nEvents"], opts.nsamp, data["Ndraw"], data["apix"]
+    nEvents, nsamp, Ndraw, apix, delta_g_pix_z, sigma_kernel = data["nEvents"], opts.nsamp, data["Ndraw"], data["apix"], data["delta_g_pix_z"], data["sigma_kernel"]
     pop_model, universe_model = opts.pop_model, opts.universe_model
 
     # Convert optional survey data to JAX arrays
@@ -108,6 +108,8 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
     dzgals_sel = to_jax("dzgals_sel")
     wgals_sel = to_jax("wgals_sel")
     ngals_sel = to_jax("ngals_sel")
+    
+    delta_g_pix_z = to_jax("delta_g_pix_z")
 
     if fixed_parameter_values is None:
         fixed_parameter_values = {}
@@ -173,10 +175,10 @@ def make_likelihood(opts, data, delta_g_pix_z, pop_params_fid, fixed_parameter_v
         )
         
         em_catalog_pe = EMCatalog(
-            apix=apix, zgals=zgals_pe, dzgals=dzgals_pe, wgals=wgals_pe, ngals=ngals_pe, delta_g_pix_z=delta_g_pix_z
+            apix=apix, zgals=zgals_pe, dzgals=dzgals_pe, wgals=wgals_pe, ngals=ngals_pe, delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel
         )
         em_catalog_sel = EMCatalog(
-            apix=apix, zgals=zgals_sel, dzgals=dzgals_sel, wgals=wgals_sel, ngals=ngals_sel, delta_g_pix_z=delta_g_pix_z
+            apix=apix, zgals=zgals_sel, dzgals=dzgals_sel, wgals=wgals_sel, ngals=ngals_sel, delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel
         )
 
         gw_pe = GWEvent(

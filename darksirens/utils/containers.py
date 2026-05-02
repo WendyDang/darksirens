@@ -23,6 +23,7 @@ class EMCatalog(NamedTuple):
     wgals: Any
     ngals: Any
     delta_g_pix_z: Any
+    sigma_kernel: Any
 
 class GWEvent(NamedTuple):
     """
