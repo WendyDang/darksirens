@@ -18,9 +18,9 @@ def load_all_data(opts):
 
     # 1. Initialize survey variables as None/defaults
     nside = None
-    zgals = dzgals = wgals = None
-    zgals_pe = dzgals_pe = wgals_pe = None
-    zgals_sel = dzgals_sel = wgals_sel = None
+    zgals =  None
+    zgals_pe = None
+    zgals_sel = None
     apix = 0.0
     sigma_kernel = 0.0
 
