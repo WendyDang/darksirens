@@ -352,7 +352,6 @@ def posterior_predictive_mass_distributions_jax(
     pq_list    = []
     pz_list    = []
     pchi_list  = []
-    pm1m2_list = []
 
     n_batches = (ns + batch_size - 1) // batch_size
 
@@ -368,16 +367,14 @@ def posterior_predictive_mass_distributions_jax(
         pq_list.append(pq_batch)
         pz_list.append(pz_batch)
         pchi_list.append(pchi_batch)
-        pm1m2_list.append(p2d_batch)
 
     pm1_samples   = jnp.concatenate(pm1_list,   axis=0)
     pm2_samples   = jnp.concatenate(pm2_list,   axis=0)
     pq_samples    = jnp.concatenate(pq_list,    axis=0)
     pz_samples    = jnp.concatenate(pz_list,    axis=0)
     pchi_samples  = jnp.concatenate(pchi_list,  axis=0)
-    pm1m2_samples = jnp.concatenate(pm1m2_list, axis=0)
 
-    return pm1_samples, pm2_samples, pq_samples, pz_samples, pchi_samples, pm1m2_samples
+    return pm1_samples, pm2_samples, pq_samples, pz_samples, pchi_samples
 
 
 # ------------------------------------------------------------
@@ -515,7 +512,7 @@ def main():
         logZs.append(log10Z)
         logZerrs.append(log10Zerr)
 
-        pm1_samples, pm2_samples, pq_samples, pz_samples, pchi_samples, pm1m2_samples = (
+        pm1_samples, pm2_samples, pq_samples, pz_samples, pchi_samples = (
             posterior_predictive_mass_distributions_jax(
                 pop_model, settings, samples, mgrid, qgrid, zgrid, chigrid, batch_size=args.batch_size
             )
@@ -536,7 +533,7 @@ def main():
         pchi_list.append((pchi_med, pchi_lo, pchi_hi))
 
         # Free GPU memory
-        del pm1_samples, pm2_samples, pq_samples, pz_samples, pm1m2_samples
+        del pm1_samples, pm2_samples, pq_samples, pz_samples
         jax.clear_caches()
 
         model_label = settings.get("model_name", os.path.basename(run_dir))
