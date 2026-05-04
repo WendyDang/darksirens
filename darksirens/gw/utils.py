@@ -33,7 +33,7 @@ warnings.filterwarnings("ignore", message="divide by zero encountered in log")
 spin_prior = IsotropicUniformMagnitudeChiEffGivenComponentMass()
 spin_prior._init_values(max_spin_magnitude=0.99)
 
-def load_gw_samples(gw_path, nsamp=64):
+def load_gw_samples(gw_path):
     """
     Load GW posterior samples from an HDF5 file and return flattened arrays
     of length (nEvents * nsamp).
@@ -42,8 +42,6 @@ def load_gw_samples(gw_path, nsamp=64):
     ----------
     gw_path : str
         Path to HDF5 file containing PE samples.
-    nsamp : int
-        Number of posterior samples per event to keep.
 
     Returns
     -------
@@ -54,7 +52,7 @@ def load_gw_samples(gw_path, nsamp=64):
     """
 
     with h5py.File(gw_path, "r") as f:
-        nsamps_file = int(f.attrs["nsamp"])
+        nsamp = int(f.attrs["nsamp"])
         nEvents = int(f.attrs["nobs"])
 
         # Load arrays as NumPy first (safer for reshaping)
@@ -67,42 +65,7 @@ def load_gw_samples(gw_path, nsamp=64):
         chieff = np.array(f["chieff"]) if "chieff" in f else np.zeros(dL.shape)
 
         # Optional PE weights
-        p_pe = np.array(f["p_pe"]) if "p_pe" in f else None
-
-    # ------------------------------------------------------------
-    # Reshape to (nEvents, nsamps_file)
-    # ------------------------------------------------------------
-    ra     = ra.reshape(nEvents, nsamps_file)
-    dec    = dec.reshape(nEvents, nsamps_file)
-    m1det  = m1det.reshape(nEvents, nsamps_file)
-    m2det  = m2det.reshape(nEvents, nsamps_file)
-    dL     = dL.reshape(nEvents, nsamps_file)
-    chieff = chieff.reshape(nEvents, nsamps_file)
-
-    # ------------------------------------------------------------
-    # Truncate to requested nsamp
-    # ------------------------------------------------------------
-    if nsamp > nsamps_file:
-        raise ValueError(
-            f"Requested nsamp={nsamp}, but file only contains nsamp={nsamps_file}"
-        )
-
-    ra     = ra[:, :nsamp]
-    dec    = dec[:, :nsamp]
-    m1det  = m1det[:, :nsamp]
-    m2det  = m2det[:, :nsamp]
-    dL     = dL[:, :nsamp]
-    chieff = chieff[:, :nsamp]
-
-    # ------------------------------------------------------------
-    # Flatten to (nEvents * nsamp,)
-    # ------------------------------------------------------------
-    ra     = ra.flatten()
-    dec    = dec.flatten()
-    m1det  = m1det.flatten()
-    m2det  = m2det.flatten()
-    dL     = dL.flatten()
-    chieff = chieff.flatten()
+        p_pe = np.array(f["p_pe"]) if "p_pe" in f else dL**2
     
     # Define cosmology to prevent NameError
     H0Planck = Planck15.H0.value
@@ -115,10 +78,6 @@ def load_gw_samples(gw_path, nsamp=64):
     # ------------------------------------------------------------
     # p_pe handling
     # ------------------------------------------------------------
-    if p_pe is None:
-        p_pe = dL**2
-    else:
-        p_pe = np.array(p_pe).reshape(nEvents, nsamps_file)[:, :nsamp].flatten()
     
     p_pe_chieff = np.exp(spin_prior._logprob(chieff, m1source, m2source, 0.99))
     p_pe = p_pe * p_pe_chieff
@@ -145,6 +104,7 @@ def load_gw_samples(gw_path, nsamp=64):
         jnp.array(dec),
         jnp.array(p_pe),
         nEvents,
+        nsamp
     )
 
 

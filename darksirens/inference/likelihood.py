@@ -165,32 +165,9 @@ def make_likelihood(opts, data, pop_params_fid, fixed_parameter_values=None):
         val = data.get(key)
         return jnp.asarray(val) if val is not None else jnp.array([0.0])
 
-    nEvents, nsamp, Ndraw = data["nEvents"], opts.nsamp, data["Ndraw"]
+    nEvents, nsamp, Ndraw = data["nEvents"], data["nsamp"], data["Ndraw"]
     apix, delta_g_pix_z, sigma_kernel = data["apix"], data["delta_g_pix_z"], data["sigma_kernel"]
     pop_model, universe_model = opts.pop_model, opts.universe_model
-
-    # Derive nsamp from the actual PE data shape rather than opts.nsamp.
-    #
-    # Using opts.nsamp (default 256) when the data has e.g. 4096 samples per
-    # event would silently truncate to 256 samples, biasing the posterior
-    # without any warning.  Deriving from the data is always correct.
-    #
-    # The flat PE array has shape (nEvents * nsamp_actual,).
-    nsamp_data = int(data["m1det"].shape[0]) // nEvents
-    nsamp = nsamp_data
-
-    if hasattr(opts, "nsamp") and opts.nsamp != nsamp_data:
-        import warnings
-        warnings.warn(
-            f"opts.nsamp={opts.nsamp} does not match the data "
-            f"({nsamp_data} samples/event derived from data shape). "
-            f"Using nsamp={nsamp_data} from data. "
-            f"Pass --nsamp {nsamp_data} to suppress this warning.",
-            stacklevel=2,
-        )
-
-    print(f"    [make_likelihood] nEvents={nEvents}, nsamp={nsamp} "
-          f"(from data), Nsel={data['dLsels'].shape[0]}")
 
     # sel_batch_size controls chunked processing of selection samples.
     # None   → unbatched (default; suitable for standard population models)

@@ -100,8 +100,6 @@ def main():
     optp.add_argument("--use_LSS", type=str_to_bool, default=False)
     optp.add_argument("--sigma_kernel", type=float, default=0.0)
 
-    optp.add_argument("--nsamp", type=int, default=256)
-
     optp.add_argument("--emcee", type=str_to_bool, default=False)
     optp.add_argument("--dynesty", type=str_to_bool, default=False)
     optp.add_argument("--jaxns", type=str_to_bool, default=False)

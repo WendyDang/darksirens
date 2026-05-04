@@ -38,8 +38,8 @@ def load_all_data(opts):
 
     # 3. Load GW posterior samples (Always required)
     # Following the new convention: m1det, m2det, dL, chieff, ra, ...
-    m1det, m2det, dL, chieff, ra, dec, p_pe, nEvents = load_gw_samples(
-        opts.gw_path, nsamp=opts.nsamp
+    m1det, m2det, dL, chieff, ra, dec, p_pe, nEvents, nsamp = load_gw_samples(
+        opts.gw_path
     )
 
     # 4. Load Selection samples (Always required)
@@ -96,6 +96,7 @@ def load_all_data(opts):
         # Survey metadata
         nEvents=nEvents,
         Ndraw=Ndraw,
+        nsamp=nsamp,
         apix=apix,
         nside=nside,
         zgals=zgals,
