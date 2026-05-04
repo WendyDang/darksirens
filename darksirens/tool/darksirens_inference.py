@@ -114,6 +114,16 @@ def main():
     optp.add_argument("--show_progress", type=str_to_bool, default=True)
     optp.add_argument("--max_samples", type=int, default=1_000_000)
 
+    optp.add_argument(
+        "--sel_batch_size", type=int, default=None,
+        help=(
+            "Chunk size for processing selection samples. "
+"None (default) processes all samples at once — correct for standard models. "
+"Set to e.g. 25000 for correlated/GP models that OOM with full selection arrays. "
+"Selection array is padded to the nearest multiple of this value automatically."
+        )
+    )
+
     opts = optp.parse_args()
 
     # --- Verbose Config Report ---
@@ -124,6 +134,11 @@ def main():
     print(f"    - Disable completeness corrections: {opts.ignore_completeness}")
     print(f"    - Sampler: {'jaxns' if opts.jaxns else 'dynesty' if opts.dynesty else 'emcee' if opts.emcee else 'NONE'}")
     print(f"    - Using LSS: {opts.use_LSS}")
+
+    if opts.sel_batch_size is not None:
+        print(f"    - Selection batching: {opts.sel_batch_size} samples/batch")
+    else:
+        print(f"    - Selection batching: disabled (all samples at once)")
 
     # Resolve ignore_completeness → effective universe_model before any
     # downstream logic sees opts.universe_model.
