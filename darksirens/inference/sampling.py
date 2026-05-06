@@ -77,9 +77,6 @@ def run_sampler(method, likelihood, prior_transform, labels,
     elif method == "dynesty":
         from dynesty import NestedSampler
         from dynesty.utils import resample_equal
-
-        # 1. JIT compile the single-point likelihood.
-        fast_likelihood = jax.jit(likelihood)
         
         # Tracker variables to peek inside Dynesty
         eval_count = 0
@@ -90,7 +87,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
             nonlocal eval_count, valid_count
             eval_count += 1
             
-            val = float(np.asarray(fast_likelihood(jnp.asarray(theta))))
+            val = float(np.asarray(likelihood(jnp.asarray(theta))))
             
             if np.isfinite(val):
                 valid_count += 1
@@ -150,8 +147,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
         from pathlib import Path
 
         # JIT the likelihood for fast single-point evaluation and batch it when possible.
-        fast_likelihood = jax.jit(likelihood)
-        batched_likelihood = jax.jit(jax.vmap(likelihood))
+        batched_likelihood = jax.vmap(likelihood)
 
         # --- NEW: Define a safe batch size to prevent GPU OOM ---
         # 8 is usually a safe sweet spot. If it still crashes, drop to 4 or 2.
@@ -165,7 +161,7 @@ def run_sampler(method, likelihood, prior_transform, labels,
             if coords.ndim == 1:
                 if np.any((coords < lower_bound) | (coords > upper_bound)):
                     return -np.inf
-                return float(np.asarray(fast_likelihood(coords)))
+                return float(np.asarray(likelihood(coords)))
             if coords.ndim != 2:
                 raise ValueError(f"Expected emcee coordinates with ndim 1 or 2, got shape {coords.shape}.")
 
