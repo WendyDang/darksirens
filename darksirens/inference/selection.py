@@ -65,27 +65,35 @@ def _lse_to_log_mu_neff(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Convert logsumexp aggregates to (log_mu, N_eff).
-
+ 
     Parameters
     ----------
-    lse  : logsumexp(log_weights)        — sum of weights in log space
-    lse2 : logsumexp(2 * log_weights)    — sum of squared weights in log space
+    lse  : logsumexp(log_weights)
+    lse2 : logsumexp(2 * log_weights)
     Ndraw : total number of generated injections
-
+ 
     Returns
     -------
-    log_mu : log of the selection integral estimate μ
-    Neff   : effective sample size (scalar)
+    log_mu : scalar
+    Neff   : scalar  (0.0 when log_mu = -inf; never NaN)
     """
     log_Ndraw  = jnp.log(Ndraw)
     log_mu     = lse  - log_Ndraw
     log_s2     = lse2 - 2.0 * log_Ndraw
-
-    # Var(μ) = (Σ w_i²)/N_draw² − μ²/N_draw
-    # In log space: logdiffexp(log_s2, 2*log_mu - log_Ndraw)
+ 
+    # Var(μ) estimator in log-space
     log_sigma2 = logdiffexp(log_s2, 2.0 * log_mu - log_Ndraw)
-    Neff       = jnp.exp(2.0 * log_mu - log_sigma2)
-
+ 
+    # Guard: when log_mu = -inf (all weights −∞), both log_mu and
+    # log_sigma2 are -inf.  The subtraction 2*(-inf) - (-inf) = NaN.
+    # We instead set Neff = 0.0, which triggers too_sparse → return -inf.
+    finite_mu = jnp.isfinite(log_mu)
+    Neff = jnp.where(
+        finite_mu,
+        jnp.exp(2.0 * log_mu - log_sigma2),
+        0.0,
+    )
+ 
     return log_mu, Neff
 
 

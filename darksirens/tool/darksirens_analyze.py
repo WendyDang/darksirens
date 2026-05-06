@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser, get_fixed_population_params
+from darksirens.inference.pop_extractor import make_pop_extractor
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -161,73 +162,6 @@ def plot_bayes_factor_matrix_pairwise(labels, log10Zs, log10Zerrs, figsize=(10, 
 
     return fig
 
-# ------------------------------------------------------------
-# Parameter Unpacking Engine for Post-Processing
-# ------------------------------------------------------------
-def build_pop_theta_extractor(settings):
-    """
-    Creates a JAX-compatible function that intelligently slices the flat `theta` array
-    to extract ONLY the population parameters, dynamically accounting for any flags
-    or parameters fixed via `settings["fixed_parameter_values"]`.
-    """
-    pop_model_name = settings["pop_model"]
-    _, _, pop_labels, _ = pop_model_prior_parser(pop_model_name)
-    
-    cosmo_labels = ["H0", "Om0"]
-    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
-
-    expected_labels = []
-    if not settings.get("fix_cosmology", False):
-        expected_labels.extend(cosmo_labels)
-    if not settings.get("fix_population", False):
-        expected_labels.extend(pop_labels)
-    if not settings.get("fix_survey", False):
-        expected_labels.extend(survey_labels)
-
-    fixed_parameter_values = settings.get("fixed_parameter_values", {})
-    if fixed_parameter_values is None:
-        fixed_parameter_values = {}
-        
-    expected_set = set(expected_labels)
-    fixed_inside_sampled = {k: float(v) for k, v in fixed_parameter_values.items() if k in expected_set}
-
-    # Determine which index in `theta` corresponds to each label
-    coord_indices = {}
-    offset = 0
-    for label in expected_labels:
-        if label in fixed_inside_sampled:
-            continue
-        coord_indices[label] = offset
-        offset += 1
-        
-    if settings.get("fix_population", False):
-        fixed_pop_array = get_fixed_population_params(pop_model_name)
-        def extractor(theta):
-            return fixed_pop_array
-    else:
-        pop_indices_in_theta = []
-        pop_fixed_mask = []
-        pop_fixed_values = []
-        
-        for label in pop_labels:
-            if label in fixed_parameter_values:
-                pop_fixed_mask.append(True)
-                pop_fixed_values.append(float(fixed_parameter_values[label]))
-                pop_indices_in_theta.append(0) # Dummy index
-            else:
-                pop_fixed_mask.append(False)
-                pop_fixed_values.append(0.0)
-                pop_indices_in_theta.append(coord_indices[label])
-                
-        pop_fixed_mask_jnp = jnp.array(pop_fixed_mask, dtype=bool)
-        pop_fixed_values_jnp = jnp.array(pop_fixed_values, dtype=float)
-        pop_indices_in_theta_jnp = jnp.array(pop_indices_in_theta, dtype=int)
-        
-        def extractor(theta):
-            sampled_vals = theta[pop_indices_in_theta_jnp]
-            return jnp.where(pop_fixed_mask_jnp, pop_fixed_values_jnp, sampled_vals)
-            
-    return extractor
 
 # ------------------------------------------------------------
 # JAX posterior predictive engine (batched, per-sample PPD)
@@ -252,7 +186,7 @@ def make_single_theta_predictive(pop_model, settings, mgrid, qgrid, zgrid, chigr
     jac = 1.0 / mgrid[:, None]
 
     # Initialize dynamic parameter extractor
-    pop_extractor = build_pop_theta_extractor(settings)
+    pop_extractor = make_pop_extractor(settings)
 
     @jax.jit
     def single_theta(theta):

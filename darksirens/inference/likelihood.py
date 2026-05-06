@@ -3,63 +3,40 @@ likelihood.py
 -------------
 Hierarchical dark-siren log-likelihood.
 
-Structure
----------
-This module is a *thin orchestrator*.  The heavy lifting lives in:
+Sentinel convention
+-------------------
+All log-probability floors are -jnp.inf, not finite magic numbers.
+  - log_p_pop: p=0 → -inf  (changed in base.py)
+  - log_prior_z: no finite guard; -inf propagates correctly through
+    logsumexp and is caught by the final jnp.isfinite(ll) check.
+  - Neff: guarded against NaN when log_mu=-inf (all weights -inf).
 
-    inference/utils.py       — log_sample_weight, log_jacobian_dL_to_z
-    inference/selection.py   — compute_selection_term, selection_log_correction
-    inference/events.py      — make_gw_event (barrier wrapping, q pre-computation)
-
-darksiren_log_likelihood
-    Assembles log_wt closure → selection term + PE term → total log-likelihood.
-    Decorated with @jax.jit; static args trigger recompilation only when the
-    model or sampler changes, not on every proposal.
-
-make_likelihood
-    Closure factory called once at startup.  Applies optimization barriers
-    to catalog arrays and GW data before they are captured by JIT.
-    Returns a scalar callable ``likelihood(coord) → log_likelihood``.
-
-Barrier strategy
-----------------
-``lax.optimization_barrier`` must be applied BEFORE arrays enter any JIT
-closure, i.e. here in make_likelihood, not inside darksiren_log_likelihood.
-Inside a JIT body the arrays are already abstract tracers and the barrier
-has no effect on constant-folding.
-
-All floating-point data arrays (GW samples, catalog) are barrier-wrapped.
-The single canonical barrier helper is ``inference.events._barrier``.
+RAM note
+--------
+optimization_barrier MUST be applied before arrays enter any JIT closure
+(i.e. in make_likelihood, not inside likelihood()). Inside a JIT body the
+arrays are already abstract tracers and the barrier has no effect.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import jax
 import jax.numpy as jnp
 from functools import partial
 from jax import lax
 from jax.scipy.special import logsumexp
-
-from astropy.cosmology import Planck15
+import numpy as np
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em import get_redshift_prior
-from darksirens.em.completion import build_pixel_kde_cache
+from darksirens.utils.cosmology import z_of_dL, ddL_of_z
+from darksirens.utils.utils import logdiffexp
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
-from darksirens.inference.events import make_gw_event, pad_gw_event_to_multiple, _barrier
-from darksirens.inference.utils import log_sample_weight
-from darksirens.inference.selection import (
-    compute_selection_term,
-    selection_log_correction,
-)
+from astropy.cosmology import Planck15
 
-# Fiducial cosmology (Planck15)
-H0_FID  = float(Planck15.H0.value)
-OM0_FID = float(Planck15.Om0)
-
-# Fiducial survey params: log10(n0), z50, w, delta, b_miss, alpha
+H0_FID          = float(Planck15.H0.value)
+OM0_FID         = float(Planck15.Om0)
 SURVEY_PARAMS_FID = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
 
 
@@ -69,9 +46,8 @@ SURVEY_PARAMS_FID = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
 
 @partial(
     jax.jit,
-    static_argnames=[
-        "nEvents", "nsamp", "pop_model", "universe_model", "sel_batch_size",
-    ],
+    static_argnames=["nEvents", "nsamp", "pop_model", "universe_model",
+                     "sel_batch_size"],
 )
 def darksiren_log_likelihood(
     cosmo:          CosmoParams,
@@ -92,66 +68,80 @@ def darksiren_log_likelihood(
     Hierarchical dark-siren log-likelihood.
 
     Returns log p({d_i} | cosmo, survey, pop_params).
-
-    Parameters
-    ----------
-    cosmo, survey, pop_params
-        Inference parameters.
-    gw_pe, em_catalog_pe
-        GW posterior samples and associated EM catalog for the PE term.
-    gw_sel, em_catalog_sel
-        Injection samples and associated EM catalog for the selection term.
-    nEvents
-        Number of observed GW events (static — recompiles if changed).
-    nsamp
-        PE samples per event (static).
-    Ndraw
-        Total number of injections drawn for the selection integral.
-    pop_model, universe_model
-        String keys selecting the population and redshift-prior models (static).
-    sel_batch_size
-        If not None, process selection samples in chunks via lax.scan.
-        The selection GWEvent must be pre-padded to a multiple of this value.
     """
     log_p_pop        = pop_model_parser(pop_model=pop_model)
-    raw_log_prior_z  = get_redshift_prior(universe_model)
+    raw_logPriorUniv = get_redshift_prior(universe_model)
+    H0, Om0          = cosmo.H0, cosmo.Om0
 
-    # Guard -inf → -1e6 to keep the scan numerically stable.
-    # Done here (not in utils.py) because the guard is an inference policy,
-    # not a property of the prior itself.
+    # No finite guard on the redshift prior.  -inf propagates correctly
+    # through logsumexp and is caught by the final isfinite check.
     def log_prior_z(z, pix, catalog):
-        lp = raw_log_prior_z(z, pix, cosmo, survey, catalog)
-        return jnp.where(jnp.isfinite(lp), lp, -1e6)
+        return raw_logPriorUniv(z, pix, cosmo, survey, catalog)
 
-    # Single weight kernel — used identically for PE and selection.
-    def log_wt(m1det, q, dL, chieff, pix, prior_wt, catalog):
-        return log_sample_weight(
-            m1det, q, dL, chieff, pix, prior_wt,
-            cosmo, survey, pop_params, catalog,
-            log_p_pop, log_prior_z,
+    def log_weight(m1det, q, dL, chieff, pix, prior_wt, catalog):
+        z    = z_of_dL(dL, H0, Om0)
+        m1   = m1det / (1.0 + z)
+        return (
+            log_p_pop(m1, q, z, chieff, pop_params)
+            + log_prior_z(z, pix, catalog)
+            - jnp.log(ddL_of_z(z, dL, H0, Om0))
+            - jnp.log(prior_wt)
+            - 2.0 * jnp.log1p(z)
         )
 
     # ------------------------------------------------------------------
     # Selection term
     # ------------------------------------------------------------------
-    log_mu, Neff = compute_selection_term(
-        gw_sel, em_catalog_sel, log_wt, Ndraw, nEvents, sel_batch_size
+    def _sel_batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b):
+        ldw = log_weight(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
+        return logsumexp(ldw), logsumexp(2.0 * ldw)
+
+    if sel_batch_size is None:
+        lse, lse2 = _sel_batch_lse(
+            gw_sel.dL, gw_sel.m1det, gw_sel.q,
+            gw_sel.chieff, gw_sel.pixels, gw_sel.prior_wt,
+        )
+        log_mu = lse  - jnp.log(Ndraw)
+        log_s2 = lse2 - 2.0 * jnp.log(Ndraw)
+    else:
+        N_sel     = gw_sel.dL.shape[0]
+        N_batches = N_sel // sel_batch_size
+
+        def _scan_fn(_, batch_idx):
+            start = batch_idx * sel_batch_size
+            sl = lambda arr: lax.dynamic_slice_in_dim(arr, start, sel_batch_size)
+            lse_b, lse2_b = _sel_batch_lse(
+                sl(gw_sel.dL), sl(gw_sel.m1det), sl(gw_sel.q),
+                sl(gw_sel.chieff), sl(gw_sel.pixels), sl(gw_sel.prior_wt),
+            )
+            return None, (lse_b, lse2_b)
+
+        _, (lse_all, lse2_all) = lax.scan(_scan_fn, None, jnp.arange(N_batches))
+        log_mu = logsumexp(lse_all)  - jnp.log(Ndraw)
+        log_s2 = logsumexp(lse2_all) - 2.0 * jnp.log(Ndraw)
+
+    # Effective sample size (Farr 2019).
+    # Guard: when all selection weights are -inf, log_mu = log_s2 = -inf.
+    # The subtraction 2*(-inf) - (-inf) = nan without the guard.
+    log_sigma2 = logdiffexp(log_s2, 2.0 * log_mu - jnp.log(Ndraw))
+    Neff = jnp.where(
+        jnp.isfinite(log_mu),
+        jnp.exp(2.0 * log_mu - log_sigma2),
+        0.0,                              # → too_sparse=True → ll=-inf below
     )
-    ll = selection_log_correction(log_mu, Neff, nEvents)
+
+    ll  = jnp.where(Neff <= 5 * nEvents, -jnp.inf, 0.0)
+    ll += -nEvents * log_mu + nEvents * (3 + nEvents) / (2.0 * Neff)
 
     # ------------------------------------------------------------------
-    # PE term: scan over events to keep peak memory O(nsamp × N_grid)
+    # PE term: scan over events
     # ------------------------------------------------------------------
     def _pe_event_fn(_, event_idx):
         s  = event_idx * nsamp
         sl = lambda arr: lax.dynamic_slice_in_dim(arr, s, nsamp)
-        ldw = log_wt(
-            sl(gw_pe.m1det),
-            sl(gw_pe.q),
-            sl(gw_pe.dL),
-            sl(gw_pe.chieff),
-            sl(gw_pe.pixels),
-            sl(gw_pe.prior_wt),
+        ldw = log_weight(
+            sl(gw_pe.m1det), sl(gw_pe.q), sl(gw_pe.dL),
+            sl(gw_pe.chieff), sl(gw_pe.pixels), sl(gw_pe.prior_wt),
             em_catalog_pe,
         )
         return None, -jnp.log(nsamp) + logsumexp(ldw)
@@ -166,41 +156,21 @@ def darksiren_log_likelihood(
 # Likelihood closure factory
 # ============================================================
 
-def make_likelihood(
-    opts,
-    data: dict,
-    pop_params_fid,
-    fixed_parameter_values: dict | None = None,
-):
+def _barrier(arr: jnp.ndarray) -> jnp.ndarray:
+    return lax.optimization_barrier(jnp.asarray(arr))
+
+
+def make_likelihood(opts, data: dict, pop_params_fid,
+                    fixed_parameter_values: dict | None = None):
     """
     Build and return the likelihood callable for the sampler.
 
-    This function runs *once* at startup.  It:
-      1. Applies ``lax.optimization_barrier`` to all GW and catalog arrays.
-      2. Pre-pads the selection GWEvent if ``sel_batch_size`` is set.
-      3. Returns a scalar ``likelihood(coord) → log_likelihood`` that the
-         sampler calls millions of times.
-
-    Parameters
-    ----------
-    opts
-        Argument namespace.  Used attributes:
-        ``pop_model``, ``universe_model``, ``fix_cosmology``,
-        ``fix_population``, ``fix_survey``, ``sel_batch_size``.
-    data
-        Dictionary produced by ``load_all_data``.
-    pop_params_fid
-        Fiducial population parameters (used when ``fix_population=True``).
-    fixed_parameter_values
-        Dict of {label: value} for parameters held fixed inside the
-        sampled coordinate vector (finer-grained than the block-level flags).
+    Applies optimization_barrier to all large catalog and GW data arrays
+    before they are captured in the JIT closure.
     """
     if fixed_parameter_values is None:
         fixed_parameter_values = {}
 
-    # ------------------------------------------------------------------
-    # Sizes and static options
-    # ------------------------------------------------------------------
     nEvents        = data["nEvents"]
     nsamp          = data["nsamp"]
     Ndraw          = data["Ndraw"]
@@ -209,108 +179,43 @@ def make_likelihood(
     universe_model = opts.universe_model
     sel_batch_size = getattr(opts, "sel_batch_size", None)
 
-    # ------------------------------------------------------------------
-    # Catalog arrays — barrier-wrapped before JIT closure capture
-    # ------------------------------------------------------------------
     def _to_jax(key):
         val = data.get(key)
         return jnp.asarray(val) if val is not None else jnp.array([0.0])
 
-    def _load_catalog(prefix):
-        return dict(
-            zgals  = _barrier(_to_jax(f"zgals_{prefix}")),
-            dzgals = _barrier(_to_jax(f"dzgals_{prefix}")),
-            wgals  = _barrier(_to_jax(f"wgals_{prefix}")),
-            ngals  = _barrier(_to_jax(f"ngals_{prefix}")),
-        )
-
-    # delta_g_pix_z is shared between PE and selection catalogs
+    # Catalog arrays — barrier-wrapped before closure capture.
+    zgals_pe   = _barrier(_to_jax("zgals_pe"))
+    dzgals_pe  = _barrier(_to_jax("dzgals_pe"))
+    wgals_pe   = _barrier(_to_jax("wgals_pe"))
+    ngals_pe   = _barrier(_to_jax("ngals_pe"))
+    zgals_sel  = _barrier(_to_jax("zgals_sel"))
+    dzgals_sel = _barrier(_to_jax("dzgals_sel"))
+    wgals_sel  = _barrier(_to_jax("wgals_sel"))
+    ngals_sel  = _barrier(_to_jax("ngals_sel"))
     delta_g_pix_z = _barrier(_to_jax("delta_g_pix_z"))
     sigma_kernel  = data["sigma_kernel"]
 
-    cat_pe  = _load_catalog("pe")
-    cat_sel = _load_catalog("sel")
+    # GW data arrays — barrier-wrapped.
+    m1det_pe   = _barrier(_to_jax("m1det"))
+    m2det_pe   = _barrier(_to_jax("m2det"))
+    dL_pe      = _barrier(_to_jax("dL"))
+    chieff_pe  = _barrier(_to_jax("chieff"))
+    p_pe       = _barrier(_to_jax("p_pe"))
+    pixels_pe  = _barrier(jnp.asarray(data["pixels_pe"], dtype=jnp.int32))
+    q_pe       = _barrier(m2det_pe / m1det_pe)
 
-    # ------------------------------------------------------------------
-    # Pixel KDE cache — computed once per run, before JIT closure.
-    #
-    # Unique pixels from PE + selection samples are extracted from raw
-    # numpy data (before barrier-wrapping) so we have concrete integer
-    # values.  build_pixel_kde_cache runs a single jit+vmap over those
-    # pixels and returns (N_unique, N_grid) + (N_pix_catalog,) arrays.
-    # These are stored in EMCatalog so _catalog_completion_inner can do
-    # an O(1) lookup instead of recomputing the KDE per (z, pix) pair.
-    # ------------------------------------------------------------------
-    import numpy as np
-    import healpy as hp
+    m1det_sel  = _barrier(_to_jax("m1detsels"))
+    m2det_sel  = _barrier(_to_jax("m2detsels"))
+    dL_sel     = _barrier(_to_jax("dLsels"))
+    chieff_sel = _barrier(_to_jax("chieffsels"))
+    p_draw     = _barrier(_to_jax("p_draw"))
+    pixels_sel = _barrier(jnp.asarray(data["pixels_sel"], dtype=jnp.int32))
+    q_sel      = _barrier(m2det_sel / m1det_sel)
 
-    nside       = data["nside"]
-    n_pix_catalog = hp.nside2npix(nside)
-
-    pixels_pe_np  = np.asarray(data["pixels_pe"],  dtype=np.int32)
-    pixels_sel_np = np.asarray(data["pixels_sel"], dtype=np.int32)
-    unique_pixels = np.unique(np.concatenate([pixels_pe_np, pixels_sel_np]))
-
-    print(
-        f"    [kde_cache] {len(unique_pixels)} unique pixels "
-        f"(pe={len(np.unique(pixels_pe_np))}, sel={len(np.unique(pixels_sel_np))})"
-    )
-
-    # Use PE catalog's zgals for the cache — both PE and selection share
-    # the same underlying galaxy catalog; the pixel coverage is what differs.
-    zgals_for_cache = np.asarray(data["zgals_pe"])
-    dN_obs_kde, pixel_to_cache_idx = build_pixel_kde_cache(
-        unique_pixels, zgals_for_cache, n_pix_catalog
-    )
-    # Barrier-wrap cache arrays like all other large constant arrays.
-    dN_obs_kde         = _barrier(dN_obs_kde)
-    pixel_to_cache_idx = _barrier(pixel_to_cache_idx)
-
-    # ------------------------------------------------------------------
-    # GW data arrays — barrier-wrapped via make_gw_event
-    # All arrays (including q) receive barriers in one canonical place.
-    # ------------------------------------------------------------------
-    gw_pe = make_gw_event(
-        m1det    = data["m1det"],
-        m2det    = data["m2det"],
-        dL       = data["dL"],
-        chieff   = data["chieff"],
-        prior_wt = data["p_pe"],
-        pixels   = data["pixels_pe"],
-    )
-
-    gw_sel_raw = make_gw_event(
-        m1det    = data["m1detsels"],
-        m2det    = data["m2detsels"],
-        dL       = data["dLsels"],
-        chieff   = data["chieffsels"],
-        prior_wt = data["p_draw"],
-        pixels   = data["pixels_sel"],
-    )
-
-    # Pad selection event if batching is requested
-    if sel_batch_size is not None:
-        gw_sel, n_pad = pad_gw_event_to_multiple(gw_sel_raw, sel_batch_size)
-        if n_pad > 0:
-            N_sel     = gw_sel_raw.dL.shape[0]
-            N_batches = (N_sel + n_pad) // sel_batch_size
-            print(
-                f"    [sel_batch] {N_sel} → {N_sel + n_pad} samples "
-                f"({N_batches} × {sel_batch_size}, {n_pad} padding entries)"
-            )
-    else:
-        gw_sel = gw_sel_raw
-
-    # ------------------------------------------------------------------
-    # Parameter space bookkeeping
-    # ------------------------------------------------------------------
+    # Parameter space.
     _, _, pop_labels, _ = pop_model_prior_parser(pop_model)
-    cosmo_labels        = ["H0", "Om0"]
-    survey_labels       = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
-
-    # Convert fiducial pop params to plain Python list NOW (before JIT closure).
-    # Indexing a JAX array inside a JIT body returns an abstract tracer —
-    # float() on a tracer raises ConcretizationTypeError.
+    cosmo_labels  = ["H0", "Om0"]
+    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
     pop_params_fid_list = [float(v) for v in pop_params_fid]
 
     sampled_labels = []
@@ -318,20 +223,14 @@ def make_likelihood(
     if not opts.fix_population: sampled_labels += pop_labels
     if not opts.fix_survey:     sampled_labels += survey_labels
 
-    # Parameters that appear in the coordinate vector but are pinned to a value
     fixed_in_coord = {
-        k: float(v)
-        for k, v in fixed_parameter_values.items()
+        k: float(v) for k, v in fixed_parameter_values.items()
         if k in set(sampled_labels)
     }
 
-    # ------------------------------------------------------------------
-    # Inner likelihood callable
-    # ------------------------------------------------------------------
     def likelihood(coord: jnp.ndarray) -> jnp.ndarray:
         coord = jnp.asarray(coord)
 
-        # --- Unpack coordinate vector ---
         values = {}
         offset = 0
         for label in sampled_labels:
@@ -340,7 +239,7 @@ def make_likelihood(
                 continue
             if offset >= coord.shape[0]:
                 raise ValueError(
-                    f"Too few coordinates: needed index {offset} for '{label}', "
+                    f"Too few coordinates: needed '{label}' at index {offset}, "
                     f"got {coord.shape[0]}."
                 )
             values[label] = coord[offset]
@@ -352,17 +251,15 @@ def make_likelihood(
             )
 
         def _get(label, default):
-            if label in values:
-                return values[label]
-            if label in fixed_parameter_values:
-                return fixed_parameter_values[label]
+            if label in values:                  return values[label]
+            if label in fixed_parameter_values:  return fixed_parameter_values[label]
             return default
 
-        # --- Cosmology ---
-        H0  = _get("H0",  H0_FID)  if opts.fix_cosmology  else values["H0"]
-        Om0 = _get("Om0", OM0_FID) if opts.fix_cosmology  else values["Om0"]
+        if opts.fix_cosmology:
+            H0, Om0 = _get("H0", H0_FID), _get("Om0", OM0_FID)
+        else:
+            H0, Om0 = values["H0"], values["Om0"]
 
-        # --- Population ---
         if opts.fix_population:
             pop_params = jnp.array([
                 _get(label, pop_params_fid_list[i])
@@ -371,7 +268,6 @@ def make_likelihood(
         else:
             pop_params = jnp.array([values[label] for label in pop_labels])
 
-        # --- Survey ---
         if opts.fix_survey:
             sp = jnp.array([
                 _get(label, float(SURVEY_PARAMS_FID[i]))
@@ -380,38 +276,32 @@ def make_likelihood(
         else:
             sp = jnp.array([values[label] for label in survey_labels])
 
-        # --- Build PyTree containers ---
         cosmo  = CosmoParams(H0=H0, Om0=Om0)
         survey = SurveyParams(
-            n0     = 10.0 ** sp[0],
-            z50    = sp[1],
-            w      = sp[2],
-            delta  = sp[3],
-            b_miss = sp[4],
-            alpha  = sp[5],
+            n0=10.0 ** sp[0], z50=sp[1], w=sp[2],
+            delta=sp[3], b_miss=sp[4], alpha=sp[5],
         )
 
         em_catalog_pe = EMCatalog(
-            apix          = apix,
-            zgals         = cat_pe["zgals"],
-            dzgals        = cat_pe["dzgals"],
-            wgals         = cat_pe["wgals"],
-            ngals         = cat_pe["ngals"],
-            delta_g_pix_z = delta_g_pix_z,
-            sigma_kernel  = sigma_kernel,
-            dN_obs_kde         = dN_obs_kde,
-            pixel_to_cache_idx = pixel_to_cache_idx,
+            apix=apix, zgals=zgals_pe, dzgals=dzgals_pe,
+            wgals=wgals_pe, ngals=ngals_pe,
+            delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel,
+            dN_obs_kde=None, pixel_to_cache_idx=None,
         )
         em_catalog_sel = EMCatalog(
-            apix          = apix,
-            zgals         = cat_sel["zgals"],
-            dzgals        = cat_sel["dzgals"],
-            wgals         = cat_sel["wgals"],
-            ngals         = cat_sel["ngals"],
-            delta_g_pix_z = delta_g_pix_z,
-            sigma_kernel  = sigma_kernel,
-            dN_obs_kde         = dN_obs_kde,
-            pixel_to_cache_idx = pixel_to_cache_idx,
+            apix=apix, zgals=zgals_sel, dzgals=dzgals_sel,
+            wgals=wgals_sel, ngals=ngals_sel,
+            delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel,
+            dN_obs_kde=None, pixel_to_cache_idx=None,
+        )
+
+        gw_pe = GWEvent(
+            m1det=m1det_pe, m2det=m2det_pe, dL=dL_pe,
+            chieff=chieff_pe, prior_wt=p_pe, pixels=pixels_pe, q=q_pe,
+        )
+        gw_sel = GWEvent(
+            m1det=m1det_sel, m2det=m2det_sel, dL=dL_sel,
+            chieff=chieff_sel, prior_wt=p_draw, pixels=pixels_sel, q=q_sel,
         )
 
         return darksiren_log_likelihood(
