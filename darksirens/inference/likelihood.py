@@ -45,6 +45,7 @@ from astropy.cosmology import Planck15
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em import get_redshift_prior
+from darksirens.em.completion import build_pixel_kde_cache
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
 from darksirens.inference.events import make_gw_event, pad_gw_event_to_multiple, _barrier
@@ -231,6 +232,41 @@ def make_likelihood(
     cat_sel = _load_catalog("sel")
 
     # ------------------------------------------------------------------
+    # Pixel KDE cache — computed once per run, before JIT closure.
+    #
+    # Unique pixels from PE + selection samples are extracted from raw
+    # numpy data (before barrier-wrapping) so we have concrete integer
+    # values.  build_pixel_kde_cache runs a single jit+vmap over those
+    # pixels and returns (N_unique, N_grid) + (N_pix_catalog,) arrays.
+    # These are stored in EMCatalog so _catalog_completion_inner can do
+    # an O(1) lookup instead of recomputing the KDE per (z, pix) pair.
+    # ------------------------------------------------------------------
+    import numpy as np
+    import healpy as hp
+
+    nside       = data["nside"]
+    n_pix_catalog = hp.nside2npix(nside)
+
+    pixels_pe_np  = np.asarray(data["pixels_pe"],  dtype=np.int32)
+    pixels_sel_np = np.asarray(data["pixels_sel"], dtype=np.int32)
+    unique_pixels = np.unique(np.concatenate([pixels_pe_np, pixels_sel_np]))
+
+    print(
+        f"    [kde_cache] {len(unique_pixels)} unique pixels "
+        f"(pe={len(np.unique(pixels_pe_np))}, sel={len(np.unique(pixels_sel_np))})"
+    )
+
+    # Use PE catalog's zgals for the cache — both PE and selection share
+    # the same underlying galaxy catalog; the pixel coverage is what differs.
+    zgals_for_cache = np.asarray(data["zgals_pe"])
+    dN_obs_kde, pixel_to_cache_idx = build_pixel_kde_cache(
+        unique_pixels, zgals_for_cache, n_pix_catalog
+    )
+    # Barrier-wrap cache arrays like all other large constant arrays.
+    dN_obs_kde         = _barrier(dN_obs_kde)
+    pixel_to_cache_idx = _barrier(pixel_to_cache_idx)
+
+    # ------------------------------------------------------------------
     # GW data arrays — barrier-wrapped via make_gw_event
     # All arrays (including q) receive barriers in one canonical place.
     # ------------------------------------------------------------------
@@ -363,6 +399,8 @@ def make_likelihood(
             ngals         = cat_pe["ngals"],
             delta_g_pix_z = delta_g_pix_z,
             sigma_kernel  = sigma_kernel,
+            dN_obs_kde         = dN_obs_kde,
+            pixel_to_cache_idx = pixel_to_cache_idx,
         )
         em_catalog_sel = EMCatalog(
             apix          = apix,
@@ -372,6 +410,8 @@ def make_likelihood(
             ngals         = cat_sel["ngals"],
             delta_g_pix_z = delta_g_pix_z,
             sigma_kernel  = sigma_kernel,
+            dN_obs_kde         = dN_obs_kde,
+            pixel_to_cache_idx = pixel_to_cache_idx,
         )
 
         return darksiren_log_likelihood(

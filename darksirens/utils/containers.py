@@ -20,6 +20,35 @@ class SurveyParams(NamedTuple):
 
 
 class EMCatalog(NamedTuple):
+    """
+    EM galaxy catalog and precomputed grids for the redshift prior.
+
+    Fields
+    ------
+    apix : float
+        Solid angle per HEALPix pixel [sr].
+    zgals : (N_pix, N_max_gals)
+        Padded galaxy redshifts per pixel.
+    dzgals : (N_pix, N_max_gals)
+        Padded galaxy photo-z uncertainties.
+    wgals : (N_pix, N_max_gals)
+        Padded galaxy base weights (luminosity / completeness).
+    ngals : (N_pix,)
+        Number of real (non-padded) galaxies per pixel.
+    delta_g_pix_z : (N_pix, N_grid)
+        LSS overdensity field pre-computed on the redshift grid.
+    sigma_kernel : float
+        KDE bandwidth for the catalog prior [redshift units].
+    dN_obs_kde : (N_unique_pix, N_grid) or None
+        Precomputed per-pixel KDE grids for dN_obs/dz.
+        None until ``build_pixel_kde_cache`` is called.
+        If None, ``_catalog_completion_inner`` recomputes on the fly
+        (correct but slower — only for backward compatibility).
+    pixel_to_cache_idx : (N_pix_catalog,) or None
+        Maps HEALPix pixel → row in ``dN_obs_kde``.
+        Pixels not covered by the cache map to 0 (never visited
+        during inference, so the value is immaterial).
+    """
     apix: Any
     zgals: Any
     dzgals: Any
@@ -27,6 +56,8 @@ class EMCatalog(NamedTuple):
     ngals: Any
     delta_g_pix_z: Any
     sigma_kernel: Any
+    dN_obs_kde: Any            # (N_unique_pix, N_grid) | None
+    pixel_to_cache_idx: Any    # (N_pix_catalog,)       | None
 
 
 class GWEvent(NamedTuple):
