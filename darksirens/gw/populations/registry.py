@@ -120,8 +120,26 @@ def _w_to_v(w_desired_full: list | np.ndarray) -> list:
     return v
 
 
+def _stick_breaking_weights_np(v: list) -> np.ndarray:
+    """
+    Pure-numpy stick-breaking for use at import time before JAX x64 is configured.
+    Mathematically identical to _stick_breaking_weights in base.py.
+    """
+    v = np.asarray(v, dtype=np.float64)
+    if len(v) == 0:
+        return np.array([1.0])
+    cumprod   = np.cumprod(1.0 - v)
+    remaining = np.concatenate([[1.0], cumprod[:-1]])
+    return np.concatenate([v * remaining, [cumprod[-1]]])
+
+
 def _verify_w_to_v_roundtrip():
-    """Sanity check at import time: _w_to_v ∘ _stick_breaking_weights = id."""
+    """Sanity check at import time: _w_to_v ∘ _stick_breaking_weights = id.
+
+    Uses the pure-numpy implementation so this runs correctly regardless of
+    whether jax_enable_x64 has been set (float32 only has ~1e-7 precision,
+    which would fail a 1e-10 tolerance check).
+    """
     cases = [
         [1.0],
         [0.1, 0.9],
@@ -134,9 +152,11 @@ def _verify_w_to_v_roundtrip():
     ]
     for w in cases:
         v   = _w_to_v(w)
-        w_r = list(np.round(_stick_breaking_weights(jnp.array(v)) if v else jnp.array([1.0]), 12))
+        w_r = list(_stick_breaking_weights_np(v))
         err = max(abs(a - b) for a, b in zip(w, w_r))
-        assert err < 1e-10, f"_w_to_v round-trip failed: desired={w}, recovered={w_r}"
+        assert err < 1e-10, (
+            f"_w_to_v round-trip failed: desired={w}, recovered={w_r}, err={err:.2e}"
+        )
 
 _verify_w_to_v_roundtrip()
 
@@ -640,7 +660,7 @@ def get_fixed_population_params(pop_model: str) -> jnp.ndarray:
     spins = _fiducial_spin(n=1 if shared_spin else n_comp)
 
     # --- Assemble in param_specs order ---
-    full = v_weights + spec["masses"] + betas + spins + [3.0]  # 3.0 = gamma
+    full = v_weights + spec["masses"] + betas + spins + [0.0]  # 3.0 = gamma
     return jnp.array(full, dtype=float)
 
 

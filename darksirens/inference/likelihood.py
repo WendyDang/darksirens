@@ -87,6 +87,7 @@ def darksiren_log_likelihood(
             - jnp.log(ddL_of_z(z, dL, H0, Om0))
             - jnp.log(prior_wt)
             - 2.0 * jnp.log1p(z)
+            - jnp.log(m1)
         )
 
     # ------------------------------------------------------------------
