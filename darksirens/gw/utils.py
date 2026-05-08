@@ -63,9 +63,11 @@ def load_gw_samples(gw_path):
         dL     = np.array(f["dL"]) * u.Mpc
         dL     = dL.value  # convert to float Mpc
         chieff = np.array(f["chieff"]) if "chieff" in f else np.zeros(dL.shape)
+        p_pe = np.array(f["p_pe"]) if "p_pe" in f else np.ones(dL.shape)
+        
+        is_mock = bool(f.attrs.get("mock_data", False))
 
-        # Optional PE weights
-        p_pe = np.array(f["p_pe"]) if "p_pe" in f else dL**2
+    print(is_mock)
     
     # Define cosmology to prevent NameError
     H0Planck = Planck15.H0.value
@@ -78,9 +80,9 @@ def load_gw_samples(gw_path):
     # ------------------------------------------------------------
     # p_pe handling
     # ------------------------------------------------------------
-    
-    p_pe_chieff = np.exp(spin_prior._logprob(chieff, m1source, m2source, 0.99))
-    p_pe = p_pe * p_pe_chieff
+    if not is_mock:
+        p_pe_chieff = np.exp(spin_prior._logprob(chieff, m1source, m2source, 0.99))
+        p_pe = p_pe * p_pe_chieff
 
     # Normalise per event so that each event's importance weights are
     # independent.  The per-event marginal likelihood is
@@ -147,10 +149,40 @@ def load_selection_samples(
         rng = np.random.default_rng()
 
     with h5py.File(file, "r") as f:
+
+        # Branch 0 — mock selection file (generate_selection.py)
+        if f.attrs.get("mock_data", True):
+            m1detsels  = np.array(f["m1detsels"][:])
+            m2detsels  = np.array(f["m2detsels"][:])
+            dLsels     = np.array(f["dLsels"][:])
+            chieffsels = np.array(f["chieffsels"][:])
+            rasels     = np.array(f["rasels"][:])
+            decsels    = np.array(f["decsels"][:])
+            pdraw_sel  = np.array(f["p_draw"][:])
+            ndraw      = int(f.attrs["Ndraw"])
+
+            n_det = len(m1detsels)
+            print(f"    [mock selection] {n_det:,} injections  "
+                  f"Ndraw={ndraw:,}  "
+                  f"pop_model={f.attrs.get('pop_model', 'unknown')}")
+            print(f"    p_draw: min={pdraw_sel.min():.3e}  "
+                  f"max={pdraw_sel.max():.3e}  "
+                  f"mean={pdraw_sel.mean():.3e}")
+
+            return (
+                jnp.array(m1detsels),
+                jnp.array(m2detsels),
+                jnp.array(dLsels),
+                jnp.array(chieffsels),
+                jnp.array(rasels),
+                jnp.array(decsels),
+                jnp.array(pdraw_sel),
+                ndraw,
+            )
         # ------------------------------------------------------------
         # Branch 1: "injections/..." format
         # ------------------------------------------------------------
-        if "injections" in f:
+        elif "injections" in f:
             m1det_all  = np.array(f["injections"]["mass1"][:])
             m2det_all  = np.array(f["injections"]["mass2"][:])
             dL_all     = np.array(f["injections"]["distance"][:])
@@ -275,8 +307,8 @@ def load_selection_samples(
             detected = far_all < far_threshold
 
         else:
-            raise RuntimeError("Unrecognized injection file format: no 'injections' or 'events' group.")
-
+            raise RuntimeError("Unrecognized injection file format: "
+                               "no 'mock_data' attr, 'injections', or 'events' group.")
     # ------------------------------------------------------------
     # Restrict to detected injections
     # ------------------------------------------------------------

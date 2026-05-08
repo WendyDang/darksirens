@@ -660,7 +660,7 @@ def get_fixed_population_params(pop_model: str) -> jnp.ndarray:
     spins = _fiducial_spin(n=1 if shared_spin else n_comp)
 
     # --- Assemble in param_specs order ---
-    full = v_weights + spec["masses"] + betas + spins + [0.0]  # 3.0 = gamma
+    full = v_weights + spec["masses"] + betas + spins + [0.0]  # 0.0 = gamma
     return jnp.array(full, dtype=float)
 
 
