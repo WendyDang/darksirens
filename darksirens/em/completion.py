@@ -250,8 +250,8 @@ def _catalog_completion_inner(
     C : float
         Redshift-dependent completeness C_eff(z|pix).
     """
-    z50, w, delta, b_miss, alpha = (
-        survey.z50, survey.w, survey.delta, survey.b_miss, survey.alpha,
+    z50, w, delta, b_miss, alpha_miss = (
+        survey.z50, survey.w, survey.delta, survey.b_miss, survey.alpha_miss,
     )
     zgals         = em_catalog.zgals
     delta_g_pix_z = em_catalog.delta_g_pix_z
@@ -280,8 +280,8 @@ def _catalog_completion_inner(
     delta_g_z = delta_g_z - jnp.mean(delta_g_z)
     rho_miss_lss = rho_miss_iso * (1.0 + b_miss * delta_g_z)
 
-    # --- Step 5: Effective missing density (alpha blend) ---
-    rho_miss_eff = (1.0 - alpha) * rho_miss_iso + alpha * rho_miss_lss
+    # --- Step 5: Effective missing density (alpha_miss blend) ---
+    rho_miss_eff = (1.0 - alpha_miss) * rho_miss_iso + alpha_miss * rho_miss_lss
     rho_miss_eff = jnp.clip(rho_miss_eff, 0.0, jnp.inf)
 
     # --- Step 6: Effective completeness curve C_eff(z) ---

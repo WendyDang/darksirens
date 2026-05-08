@@ -280,7 +280,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         cosmo  = CosmoParams(H0=H0, Om0=Om0)
         survey = SurveyParams(
             n0=10.0 ** sp[0], z50=sp[1], w=sp[2],
-            delta=sp[3], b_miss=sp[4], alpha=sp[5],
+            delta=sp[3], b_miss=sp[4], alpha_miss=sp[5],
         )
 
         em_catalog_pe = EMCatalog(
