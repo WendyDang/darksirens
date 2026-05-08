@@ -216,7 +216,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     # Parameter space.
     _, _, pop_labels, _ = pop_model_prior_parser(pop_model)
     cosmo_labels  = ["H0", "Om0"]
-    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
+    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha_miss"]
     pop_params_fid_list = [float(v) for v in pop_params_fid]
 
     sampled_labels = []

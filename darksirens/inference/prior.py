@@ -82,7 +82,7 @@ def build_parameter_space(
     pop_lower, pop_upper, pop_labels, model_name = pop_model_prior_parser(pop_model)
 
     # --- Survey ---
-    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha"]
+    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha_miss"]
     survey_lower = [-10.0, 0.0, 0.01, -10.0, 0.0, 0.0]
     survey_upper = [10.0, 5.0, 5.0, 10.0, 5.0, 1.0]
 

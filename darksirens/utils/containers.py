@@ -16,7 +16,7 @@ class SurveyParams(NamedTuple):
     w: Any
     delta: Any
     b_miss: Any
-    alpha: Any
+    alpha_miss: Any
 
 
 class EMCatalog(NamedTuple):
