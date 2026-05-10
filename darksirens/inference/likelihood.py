@@ -87,7 +87,17 @@ def darksiren_log_likelihood(
             - jnp.log(ddL_of_z(z, dL, H0, Om0))
             - jnp.log(prior_wt)
             - 2.0 * jnp.log1p(z)
-            - jnp.log(m1)
+        )
+    
+    def log_weight_ev(m1det, q, dL, chieff, pix, prior_wt, catalog):
+        z    = z_of_dL(dL, H0, Om0)
+        m1   = m1det / (1.0 + z)
+        return (
+            log_p_pop(m1, q, z, chieff, pop_params)
+            + log_prior_z(z, pix, catalog)
+            - jnp.log(ddL_of_z(z, dL, H0, Om0))
+            - jnp.log(prior_wt)
+            - 2.0 * jnp.log1p(z) - jnp.log(m1)
         )
 
     # ------------------------------------------------------------------
@@ -95,6 +105,7 @@ def darksiren_log_likelihood(
     # ------------------------------------------------------------------
     def _sel_batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b):
         ldw = log_weight(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
+        ldw = jnp.where(jnp.isfinite(ldw), ldw, -jnp.inf)
         return logsumexp(ldw), logsumexp(2.0 * ldw)
 
     if sel_batch_size is None:
@@ -140,11 +151,12 @@ def darksiren_log_likelihood(
     def _pe_event_fn(_, event_idx):
         s  = event_idx * nsamp
         sl = lambda arr: lax.dynamic_slice_in_dim(arr, s, nsamp)
-        ldw = log_weight(
+        ldw = log_weight_ev(
             sl(gw_pe.m1det), sl(gw_pe.q), sl(gw_pe.dL),
             sl(gw_pe.chieff), sl(gw_pe.pixels), sl(gw_pe.prior_wt),
             em_catalog_pe,
         )
+        ldw = jnp.where(jnp.isfinite(ldw), ldw, -jnp.inf)
         return None, -jnp.log(nsamp) + logsumexp(ldw)
 
     _, event_lls = lax.scan(_pe_event_fn, None, jnp.arange(nEvents))
