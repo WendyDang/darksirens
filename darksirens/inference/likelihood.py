@@ -29,7 +29,7 @@ import numpy as np
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em import get_redshift_prior
-from darksirens.utils.cosmology import z_of_dL, ddL_of_z
+from darksirens.inference.utils import log_sample_weight
 from darksirens.utils.utils import logdiffexp
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
@@ -79,25 +79,30 @@ def darksiren_log_likelihood(
         return raw_logPriorUniv(z, pix, cosmo, survey, catalog)
 
     def log_weight(m1det, q, dL, chieff, pix, prior_wt, catalog):
-        z    = z_of_dL(dL, H0, Om0)
-        m1   = m1det / (1.0 + z)
-        return (
-            log_p_pop(m1, q, z, chieff, pop_params)
-            + log_prior_z(z, pix, catalog)
-            - jnp.log(ddL_of_z(z, dL, H0, Om0))
-            - jnp.log(prior_wt)
-            - 2.0 * jnp.log1p(z)
+        """
+        Selection weight in the canonical integration variables.
+
+        The detected-injection ``GWEvent`` stores ``m1det`` and ``m2det`` for
+        provenance, but the likelihood integrates over ``(m1det, q, dL)``
+        with ``q = m2det / m1det``.  ``prior_wt`` must therefore be a
+        proposal density in that same basis.
+        """
+        return log_sample_weight(
+            m1det, q, dL, chieff, pix, prior_wt,
+            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
         )
-    
+
     def log_weight_ev(m1det, q, dL, chieff, pix, prior_wt, catalog):
-        z    = z_of_dL(dL, H0, Om0)
-        m1   = m1det / (1.0 + z)
-        return (
-            log_p_pop(m1, q, z, chieff, pop_params)
-            + log_prior_z(z, pix, catalog)
-            - jnp.log(ddL_of_z(z, dL, H0, Om0))
-            - jnp.log(prior_wt)
-            - 2.0 * jnp.log1p(z) - jnp.log(m1)
+        """
+        PE weight in the same ``(m1det, q, dL)`` variables as selection.
+
+        This intentionally calls the same helper as ``log_weight``.  If a PE
+        file supplies a native ``(m1det, m2det, dL)`` density, it must be
+        converted to the ``q`` basis before it reaches the likelihood.
+        """
+        return log_sample_weight(
+            m1det, q, dL, chieff, pix, prior_wt,
+            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
         )
 
     # ------------------------------------------------------------------

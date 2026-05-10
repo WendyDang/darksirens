@@ -46,7 +46,18 @@ def load_gw_samples(gw_path):
     Returns
     -------
     m1det, m2det, dL, chieff, ra, dec, p_pe : jnp.ndarray
-        Flattened arrays of length (nEvents * nsamp).
+        Flattened arrays of length (nEvents * nsamp). ``m1det`` and
+        ``m2det`` are detector-frame masses in solar masses, ``dL`` is in
+        Mpc, sky angles are radians, and ``chieff`` is dimensionless.
+        After all transformations in this loader, ``p_pe`` is the
+        per-event-normalised PE proposal density in the likelihood's
+        canonical sample basis ``(m1det, q, dL)`` with
+        ``q = m2det / m1det``.  Thus its native units before the
+        per-event normalisation are inverse solar mass per unit mass-ratio
+        per Mpc, times any spin/sky factors included by the input file.  If
+        an input file provides a density in ``(m1det, m2det, dL)``, it must
+        be converted to the ``q`` basis by multiplying by
+        ``|dm2det/dq| = m1det`` before being stored as ``p_pe``.
     nEvents : int
         Number of GW events.
     """
@@ -78,6 +89,11 @@ def load_gw_samples(gw_path):
     # ------------------------------------------------------------
     # p_pe handling
     # ------------------------------------------------------------
+    # Likelihood convention: samples are integrated over (m1det, q, dL),
+    # where q = m2det / m1det.  p_pe is therefore expected in that basis
+    # before the per-event normalisation below.  The non-mock branch folds
+    # in the 1D chi_eff prior so the final proposal density includes the
+    # spin coordinate consumed by the population model.
     if is_mock:
         print("This is using mock data.")
     else:
@@ -96,7 +112,9 @@ def load_gw_samples(gw_path):
     p_pe = p_pe / p_pe.sum(axis=1, keepdims=True)
     p_pe = p_pe.flatten()
     
-    # Convert to jnp in requested order: m1det, m2det, dL, chieff, ra, ...
+    # Convert to jnp in requested order.  m2det is retained so
+    # make_gw_event can form q, but p_pe is already in the (m1det, q, dL)
+    # proposal-density basis used by the likelihood.
     return (
         jnp.array(m1det),
         jnp.array(m2det),
@@ -117,6 +135,19 @@ def load_selection_samples(
 ):
     """
     Return (m1det, m2det, dL, chieff, ra, dec, pdraw, ndraw) for detected injections.
+
+    Integration convention after all transformations:
+
+    - ``m1det`` and ``m2det`` are detector-frame masses in solar masses.
+    - ``dL`` is luminosity distance in Mpc.
+    - ``ra`` and ``dec`` are radians, and ``chieff`` is dimensionless.
+    - ``pdraw``/``p_draw`` is the physical injection proposal density in the
+      likelihood's canonical basis ``(m1det, q, dL)`` with
+      ``q = m2det / m1det``.  Its units are inverse solar mass per unit
+      mass-ratio per Mpc per year, times any spin/sky factors included by
+      the draw distribution.  Unlike ``p_pe``, selection densities are not
+      normalised after loading because their absolute scale enters the
+      expected-detection integral.
 
     - ndraw is the total number of generated injections (accepted + rejected).
     - If nsamp is not None, a subsample of detected injections is drawn with
@@ -215,9 +246,15 @@ def load_selection_samples(
             # Remove the 6D spin probability and replace it with the 1D chi_eff probability
             p_effective = (p_joint / (p_spin1 * p_spin2)) * p_chieff_draw
 
-            # Convert to detector-frame variables
+            # Convert the effective draw density to the likelihood's
+            # canonical detector-frame variables (m1det, q, dL).  This
+            # branch's mass draw is native to component-mass coordinates,
+            # so the q-basis conversion contributes |dm2det/dq| = m1det
+            # in addition to the source-to-detector redshift/distance
+            # factors.
             pdraw_all = (
                 p_effective
+                * m1det_all
                 / (1.0 + z_all) ** 2
                 / ddL_of_z(z_all, dL_all, H0Planck, Om0Planck)
             )
@@ -290,8 +327,15 @@ def load_selection_samples(
             # Swap the 6D spin probability for the 1D chi_eff probability in log-space
             ln_pdraw_effective = ln_pdraw_joint - ln_pdraw_spin + safe_log_p_chi
 
-            pdraw_all = np.exp(ln_pdraw_effective) / (1.0 + z_all) ** 2 / ddL_of_z(
-                z_all, dL_all, H0Planck, Om0Planck
+            # Convert from native source-frame component-mass draw
+            # coordinates (m1src, m2src, z) to the canonical likelihood
+            # basis (m1det, q, dL).  The absolute inverse Jacobian is
+            # m1det / [(1+z)^2 * d(dL)/dz].
+            pdraw_all = (
+                np.exp(ln_pdraw_effective)
+                * m1det_all
+                / (1.0 + z_all) ** 2
+                / ddL_of_z(z_all, dL_all, H0Planck, Om0Planck)
             )
 
             far_all = np.min(
@@ -331,13 +375,15 @@ def load_selection_samples(
     # independent — effectively turning the selection correction into a
     # constant that cannot track changes in the population model.
     #
-    # We keep pdraw_sel as-is (already in physical units after the
-    # Jacobian and time corrections applied above) and do not renormalise.
+    # We keep pdraw_sel as-is (already in physical units in the
+    # (m1det, q, dL) basis after the Jacobian and time corrections applied
+    # above) and do not renormalise.
     pdraw_wt = pdraw_sel
     print(f"    Selection samples: Ndet={len(pdraw_wt)}, Ndraw={ndraw}, "
           f"mean(p_draw)={pdraw_wt.mean():.3e}")
 
-    # Convert to jnp in requested order: m1detsels, m2detsels, dLsels, chieffsels, rasels, ...
+    # Convert to jnp in requested order.  m2det is retained for q
+    # construction, but p_draw is already in the (m1det, q, dL) basis.
     return (
         jnp.array(m1detsels),
         jnp.array(m2detsels),
