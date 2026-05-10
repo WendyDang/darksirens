@@ -9,12 +9,17 @@ Physical picture
 We want p(z | pix, Θ) — the probability that a GW source at sky
 position ``pix`` has redshift z, given cosmological parameters Θ.
 
-Three regimes are supported:
+Four regimes are supported:
 
 1. ``"spectral_sirens"``
    GW data only.  Prior is the comoving volume element dV_c/dz.
 
-2. ``"dark_sirens_complete"``
+2. ``"bright_sirens"``
+   Counterpart-informed inference using a synthetic one-object catalog.
+   The prior is the same catalog-density model as ``dark_sirens_complete``
+   evaluated on the fixed counterpart redshift and sky position.
+
+3. ``"dark_sirens_complete"``
    EM catalog assumed 100 % complete.
 
         p(z | pix) = p_cat(z | pix)
@@ -27,7 +32,7 @@ Three regimes are supported:
    -inf for every proposal, finds no valid live points, and fails
    silently.
 
-3. ``"dark_sirens"``  (default)
+4. ``"dark_sirens"``  (default)
    Incomplete catalog; prior is a mixture weighted by C_eff(z):
 
         p(z | pix) ∝ C_eff(z|pix) * p_cat(z|pix)
@@ -183,6 +188,7 @@ def _log_prior_dark_sirens(
 #: Signature: f(z, pix, cosmo, survey, em_catalog) → log_prior (array).
 PRIOR_REGISTRY: dict = {
     "spectral_sirens":      _log_prior_spectral_sirens,
+    "bright_sirens":        _log_prior_complete_catalog,
     "dark_sirens_complete": _log_prior_complete_catalog,
     "dark_sirens":          _log_prior_dark_sirens,
 }
@@ -195,8 +201,8 @@ def get_redshift_prior(model: str):
     Parameters
     ----------
     model : str
-        One of ``"spectral_sirens"``, ``"dark_sirens_complete"``,
-        ``"dark_sirens"``.
+        One of ``"spectral_sirens"``, ``"bright_sirens"``,
+        ``"dark_sirens_complete"``, or ``"dark_sirens"``.
 
     Returns
     -------

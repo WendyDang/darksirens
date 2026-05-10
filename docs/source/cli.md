@@ -34,11 +34,14 @@ darksirens_inference \
 - `--gw_path`: required GW posterior-sample HDF5 file.
 - `--gwselection_path`: required injection/selection HDF5 file.
 - `--survey_path`: pixelated survey HDF5 file; required for dark-siren models.
+- `--counterpart RA DEC Z`: bright-siren counterpart coordinates and redshift; RA and Dec use radians, matching the GW sample convention. Required for `--universe_model bright_sirens`.
+- `--counterpart_dz`: Gaussian redshift uncertainty assigned to the synthetic counterpart catalog entry; defaults to `1e-4`.
+- `--counterpart_nside`: HEALPix NSIDE for the synthetic counterpart catalog; defaults to `1`.
 - `--save_path`: directory for settings, samples, plots, and summaries.
 
 ### Physical-model options
 
-- `--universe_model`: one of `spectral_sirens`, `dark_sirens`, or `dark_sirens_complete`.
+- `--universe_model`: one of `spectral_sirens`, `bright_sirens`, `dark_sirens`, or `dark_sirens_complete`.
 - `--pop_model`: population model name, for example `powerlaw+peak`.
 - `--fix_population`: fix all population parameters to fiducial values.
 - `--fix_cosmology`: fix cosmological parameters to fiducial values.
