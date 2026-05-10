@@ -66,8 +66,6 @@ def load_gw_samples(gw_path):
         p_pe = np.array(f["p_pe"]) if "p_pe" in f else np.ones(dL.shape)
         
         is_mock = bool(f.attrs.get("mock_data", False))
-
-    print(is_mock)
     
     # Define cosmology to prevent NameError
     H0Planck = Planck15.H0.value
@@ -81,6 +79,7 @@ def load_gw_samples(gw_path):
     # p_pe handling
     # ------------------------------------------------------------
     if not is_mock:
+        print("This is using mock data.")
         p_pe_chieff = np.exp(spin_prior._logprob(chieff, m1source, m2source, 0.99))
         p_pe = p_pe * p_pe_chieff
 
@@ -151,7 +150,8 @@ def load_selection_samples(
     with h5py.File(file, "r") as f:
 
         # Branch 0 — mock selection file (generate_selection.py)
-        if f.attrs.get("mock_data", True):
+        if f.attrs.get("mock_data", False):
+            print("This is using mock selection.")
             m1detsels  = np.array(f["m1detsels"][:])
             m2detsels  = np.array(f["m2detsels"][:])
             dLsels     = np.array(f["dLsels"][:])
