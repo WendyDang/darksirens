@@ -12,6 +12,7 @@ concepts
 data-formats
 cli
 workflows
+mock-data
 configuration
 troubleshooting
 ```
