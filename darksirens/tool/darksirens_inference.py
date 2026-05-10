@@ -123,6 +123,29 @@ def parse_json_arg(value: str | None, argname: str) -> dict:
                f"  Example: --{argname} '{{\"H0\": [60, 80]}}'")
 
 
+def parse_counterpart_arg(value: list[str] | None) -> tuple[float, float, float] | None:
+    """Parse ``--counterpart RA DEC Z`` into floats.
+
+    Angles are expected in radians, matching the GW sample convention used by
+    ``load_gw_samples`` and HEALPix indexing throughout the pipeline.
+    """
+    if value is None:
+        return None
+    if len(value) != 3:
+        _fatal("--counterpart requires exactly three values: RA DEC Z (angles in radians).")
+    try:
+        ra, dec, z = (float(x) for x in value)
+    except ValueError as e:
+        _fatal(f"--counterpart values must be numeric RA DEC Z. Error: {e}")
+    if not (0.0 <= ra < 2.0 * np.pi):
+        _fatal("--counterpart RA must be in radians with 0 <= RA < 2π.")
+    if not (-0.5 * np.pi <= dec <= 0.5 * np.pi):
+        _fatal("--counterpart Dec must be in radians with -π/2 <= Dec <= π/2.")
+    if z <= 0.0:
+        _fatal("--counterpart redshift Z must be positive.")
+    return ra, dec, z
+
+
 # ── Parameter table ────────────────────────────────────────────────────────────
 
 def _print_parameter_table(
@@ -248,6 +271,12 @@ def save_results_hdf5(
         f.attrs["gw_path"]         = opts.gw_path
         f.attrs["gwselection_path"] = opts.gwselection_path
         f.attrs["survey_path"]     = opts.survey_path or ""
+        if getattr(opts, "counterpart", None) is not None:
+            f.attrs["counterpart_ra"] = float(opts.counterpart[0])
+            f.attrs["counterpart_dec"] = float(opts.counterpart[1])
+            f.attrs["counterpart_z"] = float(opts.counterpart[2])
+            f.attrs["counterpart_dz"] = float(opts.counterpart_dz)
+            f.attrs["counterpart_nside"] = int(opts.counterpart_nside)
         f.attrs["sigma_kernel"]    = float(opts.sigma_kernel)
         f.attrs["nlive"]           = int(opts.nlive)
         f.attrs["dlogz"]           = float(opts.dlogz)
@@ -349,13 +378,19 @@ def main():
 
     g = optp.add_argument_group("Physical model")
     g.add_argument("--universe_model", default="spectral_sirens",
-                   choices=["spectral_sirens", "dark_sirens", "dark_sirens_complete"])
+                   choices=["spectral_sirens", "dark_sirens", "dark_sirens_complete", "bright_sirens"])
     g.add_argument("--pop_model",       default="powerlaw+peak")
     g.add_argument("--fix_population",  type=str_to_bool, default=False, metavar="BOOL")
     g.add_argument("--fix_cosmology",   type=str_to_bool, default=False, metavar="BOOL")
     g.add_argument("--fix_survey",      type=str_to_bool, default=False, metavar="BOOL")
     g.add_argument("--prior_overrides", default=None, metavar="JSON")
     g.add_argument("--fixed_parameter_values", default=None, metavar="JSON")
+    g.add_argument("--counterpart", nargs=3, metavar=("RA", "DEC", "Z"),
+                   help="Bright-siren counterpart coordinates and redshift; angles are radians.")
+    g.add_argument("--counterpart_dz", type=float, default=1.0e-4,
+                   help="Gaussian redshift uncertainty for --counterpart.")
+    g.add_argument("--counterpart_nside", type=int, default=1,
+                   help="HEALPix NSIDE for the synthetic bright-siren counterpart catalog.")
 
     g = optp.add_argument_group("Catalog")
     g.add_argument("--sigma_kernel", type=float, default=0.0)
@@ -378,11 +413,26 @@ def main():
 
     prior_overrides        = parse_json_arg(opts.prior_overrides,        "prior_overrides")
     fixed_parameter_values = parse_json_arg(opts.fixed_parameter_values, "fixed_parameter_values")
+    opts.counterpart       = parse_counterpart_arg(opts.counterpart)
+
+    if opts.universe_model == "bright_sirens":
+        # Bright sirens use a synthetic one-object catalog fixed by the
+        # counterpart rather than survey-completion hyperparameters.
+        opts.fix_survey = True
 
     # ── Validation ─────────────────────────────────────────────────
 
     _section("Validating configuration")
     GALAXY_AWARE = {"dark_sirens", "dark_sirens_complete"}
+
+    if opts.universe_model == "bright_sirens" and opts.counterpart is None:
+        _fatal("'bright_sirens' requires --counterpart RA DEC Z (angles in radians).")
+    if opts.universe_model != "bright_sirens" and opts.counterpart is not None:
+        _warn("--counterpart is ignored unless --universe_model bright_sirens.")
+    if opts.counterpart_dz <= 0.0:
+        _fatal("--counterpart_dz must be positive.")
+    if opts.counterpart_nside < 1 or not hp.isnsideok(opts.counterpart_nside):
+        _fatal("--counterpart_nside must be a valid positive HEALPix NSIDE.")
 
     if opts.universe_model in GALAXY_AWARE and not opts.survey_path:
         _fatal(f"'{opts.universe_model}' requires --survey_path.")
@@ -400,6 +450,11 @@ def main():
 
     _section("Run Configuration")
     _row("Universe model",   opts.universe_model)
+    if opts.counterpart is not None:
+        ra_cp, dec_cp, z_cp = opts.counterpart
+        _row("Counterpart", f"ra={ra_cp:.8g}, dec={dec_cp:.8g}, z={z_cp:.8g}")
+        _row("Counterpart dz", opts.counterpart_dz)
+        _row("Counterpart nside", opts.counterpart_nside)
     _row("Population model", opts.pop_model)
     print("  │")
     _row("Fix cosmology",    "yes" if opts.fix_cosmology  else "no")

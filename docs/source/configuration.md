@@ -22,6 +22,17 @@ Fixed-parameter example:
 
 Parameter labels must match the labels produced by the selected cosmology, population, and survey blocks. The inference command prints a parameter table at startup showing sampled, fixed, and overridden parameters.
 
+
+## Bright-siren counterparts
+
+For `--universe_model bright_sirens`, pass the electromagnetic counterpart as event metadata rather than as `--survey_path`:
+
+```bash
+--universe_model bright_sirens --counterpart RA DEC Z
+```
+
+`RA` and `DEC` are in radians. The inference loader turns the counterpart into a fixed one-object catalog at `--counterpart_nside` with redshift width `--counterpart_dz`, so the survey/completion parameter block is fixed automatically for this model. Selection samples are still loaded from `--gwselection_path` in the standard way.
+
 ## Cosmology block
 
 The standard cosmology block includes:

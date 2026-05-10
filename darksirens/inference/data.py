@@ -2,6 +2,7 @@
 
 import jax.numpy as jnp
 import healpy as hp
+import numpy as np
 
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.em.utils import load_survey
@@ -9,6 +10,7 @@ from darksirens.em.utils import load_survey
 from darksirens.em import zgrid, compute_lss_overdensity
 
 GALAXY_AWARE_MODELS = ["dark_sirens", "dark_sirens_complete"]
+BRIGHT_SIREN_MODELS = ["bright_sirens"]
 
 def load_all_data(opts):
     """
@@ -25,8 +27,33 @@ def load_all_data(opts):
     apix = 0.0
     sigma_kernel = 0.0
 
-    # 2. Load Survey only if path is provided
-    if opts.survey_path is not None:
+    # 2. Load survey data, or build the synthetic one-object catalog used by
+    # bright sirens.  The counterpart is not a survey hyperparameter: it is
+    # fixed event metadata supplied through the inference CLI.
+    if opts.universe_model in BRIGHT_SIREN_MODELS:
+        if opts.counterpart is None:
+            raise ValueError("bright_sirens requires opts.counterpart=(ra, dec, z).")
+        ra_cp, dec_cp, z_cp = opts.counterpart
+        nside = int(opts.counterpart_nside)
+        npix = hp.nside2npix(nside)
+        cp_pix = int(hp.ang2pix(nside, np.pi / 2.0 - dec_cp, ra_cp))
+
+        zgals = np.zeros((npix, 1), dtype=float)
+        dzgals = np.ones((npix, 1), dtype=float) * float(opts.counterpart_dz)
+        wgals = np.zeros((npix, 1), dtype=float)
+        ngals = np.zeros(npix, dtype=np.int32)
+
+        zgals[cp_pix, 0] = z_cp
+        wgals[cp_pix, 0] = 1.0
+        ngals[cp_pix] = 1
+
+        apix = hp.nside2pixarea(nside)
+        sigma_kernel = opts.sigma_kernel
+        print(
+            "Using bright-siren counterpart catalog: "
+            f"ra={ra_cp}, dec={dec_cp}, z={z_cp}, pixel={cp_pix}, nside={nside}"
+        )
+    elif opts.survey_path is not None:
         nside, ngals, zgals, dzgals, wgals = load_survey(opts.survey_path)
         apix = hp.nside2pixarea(nside)
         sigma_kernel = opts.sigma_kernel
