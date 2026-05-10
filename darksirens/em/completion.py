@@ -212,6 +212,10 @@ def _precompute_grids(
     dV = dV_of_z(zgrid, H0, Om0)                    # (N_grid,)
     pvol = dV / jnp.trapezoid(dV, zgrid)             # normalised volume element
 
+    global _K_SMOOTH
+    if _K_SMOOTH is None:
+        _K_SMOOTH = _build_kernel()
+
     # Expected dN/dz: n0 * apix * dV * (1+z)^delta
     dN_exp_raw = n0 * apix * dV * (1.0 + zgrid) ** delta
     dN_exp_smooth = _K_SMOOTH @ dN_exp_raw           # (N_grid,)

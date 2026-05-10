@@ -29,6 +29,7 @@ import numpy as np
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em import get_redshift_prior
+from darksirens.em.completion import build_pixel_kde_cache
 from darksirens.inference.utils import log_sample_weight
 from darksirens.utils.utils import logdiffexp
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
@@ -201,17 +202,46 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         val = data.get(key)
         return jnp.asarray(val) if val is not None else jnp.array([0.0])
 
-    # Catalog arrays — barrier-wrapped before closure capture.
-    zgals_pe   = _barrier(_to_jax("zgals_pe"))
-    dzgals_pe  = _barrier(_to_jax("dzgals_pe"))
-    wgals_pe   = _barrier(_to_jax("wgals_pe"))
-    ngals_pe   = _barrier(_to_jax("ngals_pe"))
-    zgals_sel  = _barrier(_to_jax("zgals_sel"))
-    dzgals_sel = _barrier(_to_jax("dzgals_sel"))
-    wgals_sel  = _barrier(_to_jax("wgals_sel"))
-    ngals_sel  = _barrier(_to_jax("ngals_sel"))
+    # Catalog arrays — barrier-wrapped before closure capture.  Prefer the
+    # full survey catalog because GW samples carry global HEALPix pixel
+    # indices; the *_pe/*_sel arrays are only per-sample gathered views.
+    def _catalog_key(full_key, fallback_key):
+        return full_key if data.get(full_key) is not None else fallback_key
+
+    zgals_catalog = _barrier(_to_jax(_catalog_key("zgals_catalog", "zgals")))
+    dzgals_catalog = _barrier(_to_jax(_catalog_key("dzgals_catalog", "dzgals")))
+    wgals_catalog = _barrier(_to_jax(_catalog_key("wgals_catalog", "wgals")))
+    ngals_catalog = _barrier(_to_jax("ngals_catalog"))
     delta_g_pix_z = _barrier(_to_jax("delta_g_pix_z"))
-    sigma_kernel  = data["sigma_kernel"]
+    sigma_kernel = data["sigma_kernel"]
+
+    dN_obs_kde = None
+    pixel_to_cache_idx = None
+    survey_zgals = data.get(_catalog_key("zgals_catalog", "zgals"))
+    n_pix_catalog = data.get("n_pix_catalog")
+    if (
+        universe_model == "dark_sirens"
+        and survey_zgals is not None
+        and data.get("pixels_pe") is not None
+        and data.get("pixels_sel") is not None
+    ):
+        if n_pix_catalog is None:
+            n_pix_catalog = int(np.asarray(survey_zgals).shape[0])
+        unique_pixels = np.unique(np.concatenate([
+            np.asarray(data["pixels_pe"], dtype=np.int32).ravel(),
+            np.asarray(data["pixels_sel"], dtype=np.int32).ravel(),
+        ]))
+        dN_obs_kde, pixel_to_cache_idx = build_pixel_kde_cache(
+            unique_pixels=unique_pixels,
+            zgals=survey_zgals,
+            n_pix_catalog=int(n_pix_catalog),
+        )
+
+    dN_obs_kde = _barrier(dN_obs_kde) if dN_obs_kde is not None else None
+    pixel_to_cache_idx = (
+        _barrier(jnp.asarray(pixel_to_cache_idx, dtype=jnp.int32))
+        if pixel_to_cache_idx is not None else None
+    )
 
     # GW data arrays — barrier-wrapped.
     m1det_pe   = _barrier(_to_jax("m1det"))
@@ -301,16 +331,16 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         )
 
         em_catalog_pe = EMCatalog(
-            apix=apix, zgals=zgals_pe, dzgals=dzgals_pe,
-            wgals=wgals_pe, ngals=ngals_pe,
+            apix=apix, zgals=zgals_catalog, dzgals=dzgals_catalog,
+            wgals=wgals_catalog, ngals=ngals_catalog,
             delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel,
-            dN_obs_kde=None, pixel_to_cache_idx=None,
+            dN_obs_kde=dN_obs_kde, pixel_to_cache_idx=pixel_to_cache_idx,
         )
         em_catalog_sel = EMCatalog(
-            apix=apix, zgals=zgals_sel, dzgals=dzgals_sel,
-            wgals=wgals_sel, ngals=ngals_sel,
+            apix=apix, zgals=zgals_catalog, dzgals=dzgals_catalog,
+            wgals=wgals_catalog, ngals=ngals_catalog,
             delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel,
-            dN_obs_kde=None, pixel_to_cache_idx=None,
+            dN_obs_kde=dN_obs_kde, pixel_to_cache_idx=pixel_to_cache_idx,
         )
 
         gw_pe = GWEvent(
