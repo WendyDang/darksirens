@@ -6,3 +6,5 @@ pytest
 scipy
 healpy
 jaxns
+h5py
+astropy
