@@ -20,6 +20,7 @@ def load_all_data(opts):
 
     # 1. Initialize survey variables as None/defaults
     nside = None
+    npix = None
     zgals = dzgals = wgals = None
     zgals_pe = dzgals_pe = wgals_pe = None
     zgals_sel = dzgals_sel = wgals_sel = None
@@ -55,13 +56,15 @@ def load_all_data(opts):
         )
     elif opts.survey_path is not None:
         nside, ngals, zgals, dzgals, wgals = load_survey(opts.survey_path)
+        npix = hp.nside2npix(nside)
         apix = hp.nside2pixarea(nside)
         sigma_kernel = opts.sigma_kernel
         print("Using a smoothing kernel of sigma: " + str(sigma_kernel))
     else:
         # If no survey, we might still need a default nside for 
         # pixelization logic in other parts of the code
-        nside = 1 
+        nside = 1
+        npix = hp.nside2npix(nside)
 
     # 3. Load GW posterior samples (Always required)
     # Following the new convention: m1det, m2det, dL, chieff, ra, ...
@@ -120,15 +123,22 @@ def load_all_data(opts):
         wgals_sel=wgals_sel,
         ngals_sel=ngals_sel,
 
-        # Survey metadata
+        # Survey metadata and full catalog arrays.  The full arrays are needed
+        # by likelihood-time per-pixel cache construction and by catalog-prior
+        # lookups because GW samples carry global HEALPix pixel indices.
         nEvents=nEvents,
         Ndraw=Ndraw,
         nsamp=nsamp,
         apix=apix,
         nside=nside,
+        n_pix_catalog=npix,
         zgals=zgals,
         dzgals=dzgals,
         wgals=wgals,
+        ngals_catalog=ngals,
+        zgals_catalog=zgals,
+        dzgals_catalog=dzgals,
+        wgals_catalog=wgals,
         sigma_kernel=sigma_kernel
     )
 
