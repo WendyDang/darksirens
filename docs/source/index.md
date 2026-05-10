@@ -1,0 +1,46 @@
+# darksirens documentation
+
+`darksirens` is a Python package for hierarchical cosmological inference with gravitational-wave events and, when available, large-scale galaxy surveys. The command-line tools support spectral-siren and dark-siren workflows, including survey pixelation, posterior sampling, and posterior-predictive analysis.
+
+```{toctree}
+:maxdepth: 2
+:caption: User guide
+
+installation
+quickstart
+concepts
+data-formats
+cli
+workflows
+configuration
+troubleshooting
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Reference
+
+reference/api
+reference/modules
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Project
+
+contributing
+changelog
+```
+
+## What is included?
+
+- **GW data loading** for event posterior samples and injection/selection samples.
+- **EM survey handling** for pixelated HEALPix galaxy catalogs.
+- **Redshift priors** for spectral sirens, complete-catalog dark sirens, and incomplete-catalog dark sirens.
+- **Population models** with registry-based selection of parametric and Gaussian-process-like variants.
+- **Sampling front end** for `jaxns`, `dynesty`, and `emcee`.
+- **Analysis utilities** for evidences, Bayes factors, and posterior-predictive mass/redshift distributions.
+
+## Documentation status
+
+The hosted documentation is designed for Read the Docs or any Sphinx-compatible static documentation service. It intentionally keeps examples data-light: replace file paths with your own GW posterior, injection, and survey products.
