@@ -240,6 +240,9 @@ def _catalog_completion_inner(
     If ``em_catalog.dN_obs_kde`` is not None (set by ``build_pixel_kde_cache``),
     the per-pixel KDE is fetched via an O(1) array lookup.  Otherwise it is
     recomputed on the fly — correct but O(N_grid × N_max_gals) per call.
+    The uncached fallback is retained only for direct unit tests and backward
+    compatibility; production dark-siren inference should construct the cache
+    in ``make_likelihood`` before entering this function.
 
     Note: the branch on ``em_catalog.dN_obs_kde is not None`` is evaluated
     at *trace time* (Python-level), not inside JAX's functional graph.
@@ -269,7 +272,9 @@ def _catalog_completion_inner(
         cache_idx = em_catalog.pixel_to_cache_idx[pix]
         dN_obs    = em_catalog.dN_obs_kde[cache_idx]   # (N_grid,)
     else:
-        # Fallback: recompute on the fly (correct, slower).
+        # Fallback: recompute on the fly (correct, slower).  This path is
+        # retained only for tests/backward compatibility; production
+        # dark-siren inference errors before constructing an uncached catalog.
         dN_obs = _kde_dndz_obs(pix, zgals)             # (N_grid,)
 
     # --- Step 2: Differential completeness curve ---

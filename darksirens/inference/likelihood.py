@@ -26,6 +26,7 @@ from functools import partial
 from jax import lax
 from jax.scipy.special import logsumexp
 import numpy as np
+import warnings
 
 from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em import get_redshift_prior
@@ -39,6 +40,18 @@ from astropy.cosmology import Planck15
 H0_FID          = float(Planck15.H0.value)
 OM0_FID         = float(Planck15.Om0)
 SURVEY_PARAMS_FID = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
+
+
+DARK_SIREN_CACHE_MODELS = {"dark_sirens"}
+
+
+def _unique_inference_pixels(pixels_pe, pixels_sel) -> np.ndarray:
+    """Return the sorted union of unique PE and selection HEALPix pixels."""
+    unique_pe = np.unique(np.asarray(pixels_pe, dtype=np.int32))
+    unique_sel = np.unique(np.asarray(pixels_sel, dtype=np.int32))
+    return np.unique(np.concatenate([unique_pe, unique_sel])).astype(
+        np.int32, copy=False
+    )
 
 
 # ============================================================
@@ -215,27 +228,47 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     delta_g_pix_z = _barrier(_to_jax("delta_g_pix_z"))
     sigma_kernel = data["sigma_kernel"]
 
+    # Unique-pixel KDE cache — constructed once, before likelihood() captures
+    # the catalog.  Use the union of unique PE pixels and unique selection
+    # pixels, rather than treating repeated sample rows as cache work items.
     dN_obs_kde = None
     pixel_to_cache_idx = None
+    cache_required = universe_model in DARK_SIREN_CACHE_MODELS
     survey_zgals = data.get(_catalog_key("zgals_catalog", "zgals"))
     n_pix_catalog = data.get("n_pix_catalog")
-    if (
-        universe_model == "dark_sirens"
-        and survey_zgals is not None
-        and data.get("pixels_pe") is not None
-        and data.get("pixels_sel") is not None
-    ):
-        if n_pix_catalog is None:
-            n_pix_catalog = int(np.asarray(survey_zgals).shape[0])
-        unique_pixels = np.unique(np.concatenate([
-            np.asarray(data["pixels_pe"], dtype=np.int32).ravel(),
-            np.asarray(data["pixels_sel"], dtype=np.int32).ravel(),
-        ]))
-        dN_obs_kde, pixel_to_cache_idx = build_pixel_kde_cache(
-            unique_pixels=unique_pixels,
-            zgals=survey_zgals,
-            n_pix_catalog=int(n_pix_catalog),
-        )
+    pixels_pe_raw = data.get("pixels_pe")
+    pixels_sel_raw = data.get("pixels_sel")
+
+    if cache_required:
+        missing_cache_inputs = [
+            name for name, value in (
+                ("survey galaxy redshifts", survey_zgals),
+                ("PE pixels", pixels_pe_raw),
+                ("selection pixels", pixels_sel_raw),
+            ) if value is None
+        ]
+        if missing_cache_inputs:
+            message = (
+                "Dark-siren inference requires the per-pixel KDE cache; "
+                f"cannot build it because these inputs are missing: {', '.join(missing_cache_inputs)}."
+            )
+            if getattr(opts, "allow_uncached_dark_sirens", False):
+                warnings.warn(
+                    message
+                    + " Falling back to uncached completion for tests/backward compatibility.",
+                    RuntimeWarning,
+                )
+            else:
+                raise RuntimeError(message)
+        else:
+            if n_pix_catalog is None:
+                n_pix_catalog = int(np.asarray(survey_zgals).shape[0])
+            unique_pixels = _unique_inference_pixels(pixels_pe_raw, pixels_sel_raw)
+            dN_obs_kde, pixel_to_cache_idx = build_pixel_kde_cache(
+                unique_pixels=unique_pixels,
+                zgals=survey_zgals,
+                n_pix_catalog=int(n_pix_catalog),
+            )
 
     dN_obs_kde = _barrier(dN_obs_kde) if dN_obs_kde is not None else None
     pixel_to_cache_idx = (
