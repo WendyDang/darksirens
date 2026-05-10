@@ -295,7 +295,11 @@ def _selection_injections(
 
     pz = np.interp(z, grids["z"], grids["dvc_dz"]) / np.trapz(grids["dvc_dz"], grids["z"])
     ddldz = np.gradient(grids["dl"], grids["z"])
-    jac = np.interp(z, grids["z"], ddldz) * (1.0 + z) ** 2
+    # Selection densities are consumed in the likelihood's canonical
+    # coordinates (m1det, q, dL).  Since m1det = (1+z) m1src and
+    # dL = dL(z), the Jacobian from (m1src, q, z) to (m1det, q, dL) is
+    # (1+z) * d(dL)/dz.
+    jac = np.interp(z, grids["z"], ddldz) * (1.0 + z)
     p_draw = _mass_spin_pdf(m1, q, chi, pop) * pz / np.maximum(jac, 1.0e-300) / (4.0 * np.pi)
     p_draw = np.maximum(p_draw, 1.0e-300)
 
