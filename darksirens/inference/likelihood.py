@@ -32,6 +32,7 @@ from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
 from darksirens.em import get_redshift_prior
 from darksirens.em.completion import build_pixel_kde_cache
 from darksirens.inference.utils import log_sample_weight
+from darksirens.inference.events import pad_gw_event_to_multiple
 from darksirens.utils.utils import logdiffexp
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
@@ -124,7 +125,8 @@ def darksiren_log_likelihood(
     # ------------------------------------------------------------------
     def _sel_batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b):
         ldw = log_weight(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
-        ldw = jnp.where(jnp.isfinite(ldw), ldw, -jnp.inf)
+        valid = pwt_b > 0.0
+        ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
         return logsumexp(ldw), logsumexp(2.0 * ldw)
 
     if sel_batch_size is None:
@@ -135,7 +137,13 @@ def darksiren_log_likelihood(
         log_mu = lse  - jnp.log(Ndraw)
         log_s2 = lse2 - 2.0 * jnp.log(Ndraw)
     else:
-        N_sel     = gw_sel.dL.shape[0]
+        N_sel = gw_sel.dL.shape[0]
+        if N_sel % sel_batch_size != 0:
+            raise ValueError(
+                "gw_sel length must be divisible by sel_batch_size; "
+                "pad with pad_gw_event_to_multiple before calling "
+                "darksiren_log_likelihood"
+            )
         N_batches = N_sel // sel_batch_size
 
         def _scan_fn(_, batch_idx):
@@ -396,6 +404,8 @@ def make_likelihood(opts, data: dict, pop_params_fid,
             m1det=m1det_sel, m2det=m2det_sel, dL=dL_sel,
             chieff=chieff_sel, prior_wt=p_draw, pixels=pixels_sel, q=q_sel,
         )
+        if sel_batch_size is not None:
+            gw_sel, _ = pad_gw_event_to_multiple(gw_sel, sel_batch_size)
 
         return darksiren_log_likelihood(
             cosmo, survey, pop_params,
