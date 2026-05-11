@@ -33,6 +33,7 @@ from darksirens.em import get_redshift_prior
 from darksirens.em.completion import build_pixel_kde_cache
 from darksirens.inference.utils import log_sample_weight
 from darksirens.inference.events import pad_gw_event_to_multiple
+from darksirens.utils.cosmology import dL_in_z_grid
 from darksirens.utils.utils import logdiffexp
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
@@ -131,16 +132,17 @@ def darksiren_log_likelihood(
     # ------------------------------------------------------------------
     # Selection term
     # ------------------------------------------------------------------
-    def _sel_batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b):
+    def _sel_batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b, valid_b):
+        in_dL_grid = dL_in_z_grid(dL_b, H0, Om0)
+        valid = valid_b & (pwt_b > 0.0) & in_dL_grid
         ldw = log_weight(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
-        valid = pwt_b > 0.0
         ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
         return logsumexp(ldw), logsumexp(2.0 * ldw)
 
     if sel_batch_size is None:
         lse, lse2 = _sel_batch_lse(
             gw_sel.dL, gw_sel.m1det, gw_sel.q,
-            gw_sel.chieff, gw_sel.pixels, gw_sel.prior_wt,
+            gw_sel.chieff, gw_sel.pixels, gw_sel.prior_wt, gw_sel.valid,
         )
         log_mu = lse  - jnp.log(Ndraw)
         log_s2 = lse2 - 2.0 * jnp.log(Ndraw)
@@ -160,6 +162,7 @@ def darksiren_log_likelihood(
             lse_b, lse2_b = _sel_batch_lse(
                 sl(gw_sel.dL), sl(gw_sel.m1det), sl(gw_sel.q),
                 sl(gw_sel.chieff), sl(gw_sel.pixels), sl(gw_sel.prior_wt),
+                sl(gw_sel.valid),
             )
             return None, (lse_b, lse2_b)
 
@@ -186,12 +189,18 @@ def darksiren_log_likelihood(
     def _pe_event_fn(_, event_idx):
         s  = event_idx * nsamp
         sl = lambda arr: lax.dynamic_slice_in_dim(arr, s, nsamp)
+        dL_ev = sl(gw_pe.dL)
+        valid = (
+            sl(gw_pe.valid)
+            & (sl(gw_pe.prior_wt) > 0.0)
+            & dL_in_z_grid(dL_ev, H0, Om0)
+        )
         ldw = log_weight_ev(
-            sl(gw_pe.m1det), sl(gw_pe.q), sl(gw_pe.dL),
+            sl(gw_pe.m1det), sl(gw_pe.q), dL_ev,
             sl(gw_pe.chieff), sl(gw_pe.pixels), sl(gw_pe.prior_wt),
             em_catalog_pe,
         )
-        ldw = jnp.where(jnp.isfinite(ldw), ldw, -jnp.inf)
+        ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
         return None, -jnp.log(nsamp) + logsumexp(ldw)
 
     _, event_lls = lax.scan(_pe_event_fn, None, jnp.arange(nEvents))
@@ -557,10 +566,12 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         gw_pe = GWEvent(
             m1det=m1det_pe, m2det=m2det_pe, dL=dL_pe,
             chieff=chieff_pe, prior_wt=p_pe, pixels=pixels_pe, q=q_pe,
+            valid=jnp.ones_like(dL_pe, dtype=bool),
         )
         gw_sel = GWEvent(
             m1det=m1det_sel, m2det=m2det_sel, dL=dL_sel,
             chieff=chieff_sel, prior_wt=p_draw, pixels=pixels_sel, q=q_sel,
+            valid=jnp.ones_like(dL_sel, dtype=bool),
         )
         if sel_batch_size is not None:
             gw_sel, _ = pad_gw_event_to_multiple(gw_sel, sel_batch_size)
