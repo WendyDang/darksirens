@@ -256,7 +256,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         data[f"zgals_{prefix}"] = full_z[unique_pixels]
         data[f"dzgals_{prefix}"] = full_dz[unique_pixels]
         data[f"wgals_{prefix}"] = full_w[unique_pixels]
-        data["ngals" if prefix == "pe" else "ngals_sel"] = full_n[unique_pixels]
+        data["ngals_pe" if prefix == "pe" else "ngals_sel"] = full_n[unique_pixels]
         return True
 
     pe_uses_compact = pe_uses_compact or _ensure_compact("pe", "pixels_pe")
@@ -265,7 +265,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     zgals_pe_catalog = _barrier(_to_jax(_catalog_key("zgals_pe", "zgals_catalog")))
     dzgals_pe_catalog = _barrier(_to_jax(_catalog_key("dzgals_pe", "dzgals_catalog")))
     wgals_pe_catalog = _barrier(_to_jax(_catalog_key("wgals_pe", "wgals_catalog")))
-    ngals_pe_raw = data.get("ngals") if pe_uses_compact else data.get("ngals_catalog")
+    ngals_pe_raw = data.get("ngals_pe") if pe_uses_compact else data.get("ngals_catalog")
     ngals_pe_catalog = (
         _barrier(jnp.asarray(ngals_pe_raw, dtype=jnp.int32))
         if ngals_pe_raw is not None else None
@@ -370,7 +370,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
                         "PE galaxy mask (wgals or ngals)",
                         data.get("wgals_pe")
                         if data.get("wgals_pe") is not None
-                        else data.get("ngals"),
+                        else data.get("ngals_pe"),
                     ),
                     (
                         "selection galaxy mask (wgals or ngals)",
@@ -401,7 +401,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
                     zgals=data["zgals_pe"],
                     n_pix_catalog=n_pe_rows,
                     wgals=data.get("wgals_pe"),
-                    ngals=data.get("ngals"),
+                    ngals=data.get("ngals_pe"),
                 )
                 dN_obs_kde_sel, pixel_to_cache_idx_sel = build_pixel_kde_cache(
                     unique_pixels=np.arange(n_sel_rows, dtype=np.int32),
