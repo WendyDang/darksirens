@@ -12,6 +12,43 @@ from darksirens.em import zgrid, compute_lss_overdensity
 GALAXY_AWARE_MODELS = ["dark_sirens", "dark_sirens_complete"]
 BRIGHT_SIREN_MODELS = ["bright_sirens"]
 
+
+def _compact_catalog_for_pixels(pixels, zgals, dzgals, wgals, ngals):
+    """Return compact catalog rows and sample→row lookup for pixels."""
+    pixels = np.asarray(pixels, dtype=np.int32)
+    unique_pixels, sample_to_unique_idx = np.unique(pixels, return_inverse=True)
+    unique_pixels = unique_pixels.astype(np.int32, copy=False)
+    sample_to_unique_idx = sample_to_unique_idx.astype(np.int32, copy=False)
+    return (
+        unique_pixels,
+        sample_to_unique_idx,
+        zgals[unique_pixels],
+        dzgals[unique_pixels],
+        wgals[unique_pixels],
+        ngals[unique_pixels],
+    )
+
+
+def _catalog_memory_diagnostics(zgals, dzgals, wgals, pixels_pe, pixels_sel, ngals_pe, ngals_sel):
+    """Summarise memory saved by compact unique-pixel catalog views."""
+    unique_pe = np.unique(np.asarray(pixels_pe, dtype=np.int32))
+    unique_sel = np.unique(np.asarray(pixels_sel, dtype=np.int32))
+    row_bytes = sum(arr.dtype.itemsize * arr.shape[1] for arr in (zgals, dzgals, wgals))
+    duplicated_pe = max(0, np.asarray(pixels_pe).size - unique_pe.size) * row_bytes
+    duplicated_sel = max(0, np.asarray(pixels_sel).size - unique_sel.size) * row_bytes
+    max_gals = 0
+    if ngals_pe is not None and ngals_pe.size:
+        max_gals = max(max_gals, int(np.max(ngals_pe)))
+    if ngals_sel is not None and ngals_sel.size:
+        max_gals = max(max_gals, int(np.max(ngals_sel)))
+    return {
+        "unique_pe_pixels": int(unique_pe.size),
+        "unique_sel_pixels": int(unique_sel.size),
+        "duplicated_catalog_bytes_avoided": int(duplicated_pe + duplicated_sel),
+        "max_galaxies_per_unique_pixel": max_gals,
+    }
+
+
 def load_all_data(opts):
     """
     Loads survey, GW posterior, and selection data. 
@@ -24,7 +61,10 @@ def load_all_data(opts):
     zgals = dzgals = wgals = None
     zgals_pe = dzgals_pe = wgals_pe = None
     zgals_sel = dzgals_sel = wgals_sel = None
+    unique_pixels_pe = unique_pixels_sel = None
+    sample_to_unique_pe = sample_to_unique_sel = None
     ngals = ngals_pe = ngals_sel = None
+    catalog_memory = None
     apix = 0.0
     sigma_kernel = 0.0
 
@@ -84,18 +124,33 @@ def load_all_data(opts):
     pixels_sel = hp.ang2pix(nside, jnp.pi/2 - decsels, rasels)
 
     if zgals is not None:
-        zgals_pe = zgals[pixels_pe]
-        dzgals_pe = dzgals[pixels_pe]
-        wgals_pe = wgals[pixels_pe]
-        ngals_pe = ngals[pixels_pe]
-        
-        zgals_sel = zgals[pixels_sel]
-        dzgals_sel = dzgals[pixels_sel]
-        wgals_sel = wgals[pixels_sel]
-        ngals_sel = ngals[pixels_sel]
-        
-        print("samples" + str(ngals_pe.sum()))
-        print("selection" + str(ngals_sel.sum()))
+        (
+            unique_pixels_pe, sample_to_unique_pe,
+            zgals_pe, dzgals_pe, wgals_pe, ngals_pe,
+        ) = _compact_catalog_for_pixels(pixels_pe, zgals, dzgals, wgals, ngals)
+        (
+            unique_pixels_sel, sample_to_unique_sel,
+            zgals_sel, dzgals_sel, wgals_sel, ngals_sel,
+        ) = _compact_catalog_for_pixels(pixels_sel, zgals, dzgals, wgals, ngals)
+
+        catalog_memory = _catalog_memory_diagnostics(
+            zgals, dzgals, wgals, pixels_pe, pixels_sel, ngals_pe, ngals_sel
+        )
+        print("samples" + str(ngals_pe[sample_to_unique_pe].sum()))
+        print("selection" + str(ngals_sel[sample_to_unique_sel].sum()))
+        print(
+            "    - Compact catalog rows: "
+            f"PE {catalog_memory['unique_pe_pixels']:,}, "
+            f"selection {catalog_memory['unique_sel_pixels']:,}"
+        )
+        print(
+            "    - Duplicated catalog bytes avoided: "
+            f"{catalog_memory['duplicated_catalog_bytes_avoided'] / 1e9:.4f} GB"
+        )
+        print(
+            "    - Max galaxies per unique inference pixel: "
+            f"{catalog_memory['max_galaxies_per_unique_pixel']:,}"
+        )
 
     # 6. Pack into dictionary
     data = dict(
@@ -110,6 +165,8 @@ def load_all_data(opts):
         dzgals_pe=dzgals_pe,
         wgals_pe=wgals_pe,
         ngals=ngals_pe,
+        unique_pixels_pe=unique_pixels_pe,
+        sample_to_unique_pe=sample_to_unique_pe,
 
         # Selection samples
         m1detsels=m1detsels,
@@ -122,10 +179,12 @@ def load_all_data(opts):
         dzgals_sel=dzgals_sel,
         wgals_sel=wgals_sel,
         ngals_sel=ngals_sel,
+        unique_pixels_sel=unique_pixels_sel,
+        sample_to_unique_sel=sample_to_unique_sel,
 
-        # Survey metadata and full catalog arrays.  The full arrays are needed
-        # by likelihood-time per-pixel cache construction and by catalog-prior
-        # lookups because GW samples carry global HEALPix pixel indices.
+        # Survey metadata and full catalog arrays.  Full pixel indexing is kept
+        # only for operations that need global HEALPix rows, such as LSS
+        # overdensity construction and startup cache generation.
         nEvents=nEvents,
         Ndraw=Ndraw,
         nsamp=nsamp,
@@ -139,6 +198,7 @@ def load_all_data(opts):
         zgals_catalog=zgals,
         dzgals_catalog=dzgals,
         wgals_catalog=wgals,
+        catalog_memory=catalog_memory,
         sigma_kernel=sigma_kernel
     )
 

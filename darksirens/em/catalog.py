@@ -89,6 +89,9 @@ def log_catalog_prior(
     H0, Om0 = cosmo.H0, cosmo.Om0
     zgals, dzgals, wgals, sigma_kde = em_catalog.zgals, em_catalog.dzgals, em_catalog.wgals, em_catalog.sigma_kernel
 
+    # ``pix`` is the catalog-row index for compact/sliced catalogs (the
+    # caller passes the per-sample ``sample_to_unique_idx`` map) and the raw
+    # HEALPix pixel for legacy full catalogs.
     zs = zgals[pix]         # z_i: (N_max_gals,)
     sig = dzgals[pix]       # \sigma_{cat, i}: (N_max_gals,) Raw instrumental errors
     w = wgals[pix]          # w_i: (N_max_gals,) Base weights

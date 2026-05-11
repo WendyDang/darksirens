@@ -27,16 +27,20 @@ class EMCatalog(NamedTuple):
     ------
     apix : float
         Solid angle per HEALPix pixel [sr].
-    zgals : (N_pix, N_max_gals)
-        Padded galaxy redshifts per pixel.
-    dzgals : (N_pix, N_max_gals)
+    zgals : (N_catalog_rows, N_max_gals)
+        Padded galaxy redshifts per catalog row.  For compact/sliced
+        catalogs this has one row per unique inference pixel; for legacy
+        full catalogs the row index is the global HEALPix pixel.
+    dzgals : (N_catalog_rows, N_max_gals)
         Padded galaxy photo-z uncertainties.
-    wgals : (N_pix, N_max_gals)
+    wgals : (N_catalog_rows, N_max_gals)
         Padded galaxy base weights (luminosity / completeness).
-    ngals : (N_pix,)
-        Number of real (non-padded) galaxies per pixel.
-    delta_g_pix_z : (N_pix, N_grid)
-        LSS overdensity field pre-computed on the redshift grid.
+    ngals : (N_catalog_rows,)
+        Number of real (non-padded) galaxies per catalog row.
+    delta_g_pix_z : (N_pix, N_grid) or (1, N_grid)
+        LSS overdensity field pre-computed on the redshift grid.  This
+        remains globally pixel-indexed when LSS is enabled; compact
+        catalogs use ``unique_pixels[row]`` before indexing it.
     sigma_kernel : float
         KDE bandwidth for the catalog prior [redshift units].
     dN_obs_kde : (N_unique_pix, N_grid) or None
@@ -44,10 +48,18 @@ class EMCatalog(NamedTuple):
         None until ``build_pixel_kde_cache`` is called.
         If None, ``_catalog_completion_inner`` recomputes on the fly
         (correct but slower — only for backward compatibility).
-    pixel_to_cache_idx : (N_pix_catalog,) or None
-        Maps HEALPix pixel → row in ``dN_obs_kde``.
-        Pixels not covered by the cache map to 0 (never visited
-        during inference, so the value is immaterial).
+    pixel_to_cache_idx : (N_pix_catalog,) or (N_catalog_rows,) or None
+        Maps the incoming pixel/catalog-row index to a row in
+        ``dN_obs_kde``.  Pixels not covered by the cache map to 0
+        (never visited during inference, so the value is immaterial).
+    unique_pixels : (N_catalog_rows,) or None
+        Global HEALPix pixel represented by each compact catalog row.
+        ``None`` means the catalog rows are already global pixel rows.
+    sample_to_unique_idx : array or None
+        Per-sample lookup map from the original PE/selection sample order to
+        compact catalog row.  The likelihood passes this array as the
+        GWEvent pixel index for compact catalogs; the field is retained on
+        the catalog for diagnostics/introspection.
     """
     apix: Any
     zgals: Any
@@ -57,7 +69,9 @@ class EMCatalog(NamedTuple):
     delta_g_pix_z: Any
     sigma_kernel: Any
     dN_obs_kde: Any            # (N_unique_pix, N_grid) | None
-    pixel_to_cache_idx: Any    # (N_pix_catalog,)       | None
+    pixel_to_cache_idx: Any    # (N_pix_catalog or N_catalog_rows,) | None
+    unique_pixels: Any = None  # (N_catalog_rows,) | None
+    sample_to_unique_idx: Any = None  # sample-shaped int array | None
 
 
 class GWEvent(NamedTuple):
