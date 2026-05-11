@@ -24,13 +24,11 @@ Four regimes are supported:
 
         p(z | pix) = p_cat(z | pix)
 
-   **Empty-pixel fallback**: at nside ≥ 64 many pixels contain zero
-   catalog galaxies, making log_p_cat = -inf.  For these pixels we
-   fall back to the volume prior — the maximally agnostic choice
-   consistent with the complete-catalog assumption (no information
-   from an empty pixel).  Without the fallback the sampler sees
-   -inf for every proposal, finds no valid live points, and fails
-   silently.
+   Empty pixels are handled by an explicit policy.  The formal complete-catalog
+   default is ``zero``: a pixel with no real catalog galaxies has zero host
+   probability and returns ``-inf``.  The optional ``volume`` policy preserves
+   the historical volume-prior fallback as a robustness approximation for
+   sparse pixelations.
 
 4. ``"dark_sirens"``  (default)
    Incomplete catalog; prior is a mixture weighted by C_eff(z):
@@ -69,6 +67,10 @@ from .completion import _precompute_grids, _catalog_completion_inner
 from .utils import zgrid
 
 
+COMPLETE_EMPTY_PIXEL_POLICY_ZERO = 0
+COMPLETE_EMPTY_PIXEL_POLICY_VOLUME = 1
+
+
 # ------------------------------------------------------------
 # Individual prior implementations
 # ------------------------------------------------------------
@@ -102,29 +104,41 @@ def _log_prior_complete_catalog(
 
         p(z | pix) = p_cat(z | pix)
 
-    Empty-pixel fallback
-    --------------------
-    At nside ≥ 64 many pixels contain no catalog galaxies, giving
-    log_p_cat = -inf.  Those pixels carry no redshift information
-    under the complete-catalog assumption, which is equivalent to
-    using the agnostic volume prior.
+    Empty-pixel policy
+    ------------------
+    The strict complete-catalog interpretation is controlled by
+    ``survey.complete_empty_pixel_policy == 0`` (``zero``): if the requested
+    catalog row has no real galaxies, the prior returns ``-inf`` because no
+    host exists in that pixel.
 
-    We apply the fallback per-sample: if log_p_cat[i] is not finite,
-    substitute log_volume_prior at z[i].  This is correct and safe
-    inside JIT because ``jnp.where`` is evaluated element-wise on the
-    output arrays without branching in the computational graph.
+    ``survey.complete_empty_pixel_policy == 1`` (``volume``) keeps the previous
+    volume-prior fallback only for genuinely empty pixels.  This is a
+    robustness approximation for sparse pixelations, not the formal
+    complete-catalog model.
 
-    Note: ``dark_sirens`` does not need this because C_eff → 0 for
-    empty pixels automatically routes the mixture to p_miss.
+    Empty pixels are identified from ``em_catalog.ngals`` (or, for legacy
+    catalogs lacking it, a positive-weight real-galaxy mask), not from
+    ``isfinite(log_p_cat)``.  Therefore numerical underflow in a non-empty
+    pixel does not silently switch to the volume prior.
     """
     from .catalog import log_catalog_prior_vmap  # local import avoids circular
     log_p_cat = log_catalog_prior_vmap(z, pix, cosmo, survey, em_catalog)
+
+    if em_catalog.ngals is not None:
+        row_has_galaxies = jnp.take(em_catalog.ngals, pix) > 0
+    else:
+        row_has_galaxies = jnp.any(jnp.take(em_catalog.wgals, pix, axis=0) > 0.0, axis=-1)
 
     # Precompute volume grid once (shared across all samples via CSE).
     pvol_norm  = _precompute_volume_grid(cosmo)
     log_p_vol  = vmap(lambda z_i: jnp.interp(z_i, zgrid, jnp.log(pvol_norm)))(z)
 
-    return jnp.where(jnp.isfinite(log_p_cat), log_p_cat, log_p_vol)
+    empty_value = jnp.where(
+        survey.complete_empty_pixel_policy == COMPLETE_EMPTY_PIXEL_POLICY_VOLUME,
+        log_p_vol,
+        -jnp.inf,
+    )
+    return jnp.where(row_has_galaxies, log_p_cat, empty_value)
 
 
 @jit

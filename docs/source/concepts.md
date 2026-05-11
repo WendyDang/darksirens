@@ -14,6 +14,10 @@ Use this mode with:
 
 A complete-catalog dark-siren analysis assumes the electromagnetic catalog traces all possible hosts in the survey volume. The redshift prior is driven by the catalog density in each sky pixel.
 
+Empty pixels are treated explicitly. The default `--complete_empty_pixel_policy zero` is the formal complete-catalog behavior: a sky pixel with `ngals == 0` has no possible host galaxies and contributes log-prior `-inf`. This check uses the catalog's real-galaxy count or mask, not whether the evaluated catalog KDE happened to be finite.
+
+For sparse/high-resolution pixelations, `--complete_empty_pixel_policy volume` restores the historical fallback in which genuinely empty pixels use the comoving-volume redshift prior. This mode is a robustness approximation for sampler stability and sensitivity studies, not the strict complete-catalog likelihood. Non-empty pixels always use the catalog prior; numerical underflow in `p_cat` is not reinterpreted as an empty pixel.
+
 Use this mode with:
 
 ```bash

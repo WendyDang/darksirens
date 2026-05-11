@@ -44,6 +44,13 @@ SURVEY_PARAMS_FID = jnp.array([-2.0, 1.0, 0.5, 0.0, 1.0, 0.5])
 
 
 DARK_SIREN_CACHE_MODELS = {"dark_sirens"}
+COMPLETE_EMPTY_PIXEL_POLICIES = {"zero": 0, "volume": 1}
+
+
+def _complete_empty_pixel_policy_code(policy: str | int) -> int:
+    if isinstance(policy, str):
+        return COMPLETE_EMPTY_PIXEL_POLICIES[policy]
+    return int(policy)
 
 
 def _unique_inference_pixels(pixels_pe, pixels_sel) -> np.ndarray:
@@ -218,6 +225,9 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     pop_model      = opts.pop_model
     universe_model = opts.universe_model
     sel_batch_size = getattr(opts, "sel_batch_size", None)
+    complete_empty_pixel_policy = _complete_empty_pixel_policy_code(
+        getattr(opts, "complete_empty_pixel_policy", "zero")
+    )
 
     def _to_jax(key):
         val = data.get(key)
@@ -507,6 +517,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         survey = SurveyParams(
             n0=10.0 ** sp[0], z50=sp[1], w=sp[2],
             delta=sp[3], b_miss=sp[4], alpha_miss=sp[5],
+            complete_empty_pixel_policy=complete_empty_pixel_policy,
         )
 
         em_catalog_pe = EMCatalog(

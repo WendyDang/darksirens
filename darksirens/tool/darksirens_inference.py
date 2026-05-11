@@ -264,6 +264,7 @@ def save_results_hdf5(
         # Run metadata
         f.attrs["pop_model"]       = opts.pop_model
         f.attrs["universe_model"]  = opts.universe_model
+        f.attrs["complete_empty_pixel_policy"] = opts.complete_empty_pixel_policy
         f.attrs["sampler"]         = opts.sampler
         f.attrs["fix_cosmology"]   = bool(opts.fix_cosmology)
         f.attrs["fix_population"]  = bool(opts.fix_population)
@@ -391,6 +392,11 @@ def main():
                    help="Gaussian redshift uncertainty for --counterpart.")
     g.add_argument("--counterpart_nside", type=int, default=1,
                    help="HEALPix NSIDE for the synthetic bright-siren counterpart catalog.")
+    g.add_argument("--complete_empty_pixel_policy", default="zero",
+                   choices=["zero", "volume"],
+                   help=("Policy for genuinely empty pixels in complete-catalog models: "
+                         "'zero' is the formal complete-catalog default; "
+                         "'volume' preserves the historical volume-prior robustness approximation."))
 
     g = optp.add_argument_group("Catalog")
     g.add_argument("--sigma_kernel", type=float, default=0.0)
@@ -456,6 +462,8 @@ def main():
         _row("Counterpart dz", opts.counterpart_dz)
         _row("Counterpart nside", opts.counterpart_nside)
     _row("Population model", opts.pop_model)
+    if opts.universe_model in {"dark_sirens_complete", "bright_sirens"}:
+        _row("Empty-pixel policy", opts.complete_empty_pixel_policy)
     print("  │")
     _row("Fix cosmology",    "yes" if opts.fix_cosmology  else "no")
     _row("Fix population",   "yes" if opts.fix_population else "no")
