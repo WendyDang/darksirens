@@ -54,6 +54,8 @@ darksirens_inference \
 
 - `--sigma_kernel`: smoothing kernel width used by catalog-related calculations.
 - `--use_LSS`: include large-scale-structure overdensity where supported.
+- `--validate_completion`: run a dry-run completion clipping diagnostic, save `completion_validation__*.json` under `--save_path`, and exit before likelihood construction or sampling.
+- `--completion_validation_pixels`: maximum number of unique catalog pixels to inspect during `--validate_completion`; defaults to `64`.
 
 ### Sampler options
 

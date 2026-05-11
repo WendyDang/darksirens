@@ -387,6 +387,132 @@ _catalog_completion_inner_vmap = vmap(
 )
 
 
+def _completion_clip_fractions_for_pixel(
+    pix: int,
+    grids: _CompletionGrids,
+    survey: SurveyParams,
+    em_catalog: EMCatalog,
+) -> dict[str, float]:
+    """Return clipping fractions on ``zgrid`` for one catalog pixel.
+
+    This diagnostic mirrors ``_catalog_completion_inner`` but keeps the
+    pre-clipped arrays so broad or poorly scaled survey parameters can be
+    identified before a long sampler run.  Fractions are computed over the
+    module redshift grid and therefore have denominator ``len(zgrid)``.
+    """
+    z50, w, b_miss, alpha_miss = (
+        survey.z50, survey.w, survey.b_miss, survey.alpha_miss,
+    )
+    global_pix = pix if em_catalog.unique_pixels is None else em_catalog.unique_pixels[pix]
+
+    if em_catalog.dN_obs_kde is not None:
+        cache_idx = em_catalog.pixel_to_cache_idx[global_pix]
+        dN_obs = em_catalog.dN_obs_kde[cache_idx]
+    else:
+        dN_obs = _kde_dndz_obs(
+            pix, em_catalog.zgals, wgals=em_catalog.wgals, ngals=em_catalog.ngals
+        )
+
+    dN_exp_smooth = grids.dN_exp_smooth
+    pvol = grids.pvol
+    dN_exp_safe = jnp.where(dN_exp_smooth > 0.0, dN_exp_smooth, 1.0)
+
+    C_iso_raw = dN_obs / dN_exp_safe
+    C_iso_clipped_mask = (C_iso_raw < 0.0) | (C_iso_raw > 1.0)
+    C_iso = jnp.clip(C_iso_raw, 0.0, 1.0) * _survey_rolloff(zgrid, z50, w)
+
+    rho_miss_iso = (1.0 - C_iso) * pvol
+    delta_idx = jnp.where(em_catalog.delta_g_pix_z.shape[0] == 1, 0, global_pix)
+    delta_g_z = em_catalog.delta_g_pix_z[delta_idx]
+    delta_g_z = delta_g_z - jnp.mean(delta_g_z)
+    rho_miss_lss = rho_miss_iso * (1.0 + b_miss * delta_g_z)
+
+    rho_miss_eff_raw = (
+        (1.0 - alpha_miss) * rho_miss_iso + alpha_miss * rho_miss_lss
+    )
+    rho_miss_eff_clipped_mask = rho_miss_eff_raw < 0.0
+    rho_miss_eff = jnp.clip(rho_miss_eff_raw, 0.0, jnp.inf)
+
+    pvol_safe = jnp.where(pvol > 0.0, pvol, 1.0)
+    C_eff_raw = 1.0 - rho_miss_eff / pvol_safe
+    C_eff_clipped_mask = (C_eff_raw < 0.0) | (C_eff_raw > 1.0)
+
+    return {
+        "C_iso_clipped_fraction": float(jnp.mean(C_iso_clipped_mask)),
+        "C_eff_clipped_fraction": float(jnp.mean(C_eff_clipped_mask)),
+        "rho_miss_eff_clipped_fraction": float(jnp.mean(rho_miss_eff_clipped_mask)),
+    }
+
+
+def completion_clip_diagnostics(
+    cosmo: CosmoParams,
+    survey: SurveyParams,
+    em_catalog: EMCatalog,
+    pixels: np.ndarray | None = None,
+    max_pixels: int = 64,
+) -> dict[str, object]:
+    """Summarise completion clipping over a representative pixel set.
+
+    Parameters
+    ----------
+    cosmo, survey, em_catalog
+        Same containers used by ``catalog_completion``.
+    pixels : array-like, optional
+        Catalog-row pixel ids to inspect.  For compact catalogs these are row
+        indices, not global HEALPix ids.  Defaults to all available compact
+        rows, truncated by ``max_pixels``.
+    max_pixels : int
+        Maximum number of pixels to inspect for an inexpensive dry-run check.
+
+    Returns
+    -------
+    dict
+        JSON-serialisable summary with per-field mean/max clipping fractions
+        and per-pixel fractions for the inspected rows.
+    """
+    grids = _precompute_grids(cosmo, survey, em_catalog)
+
+    if pixels is None:
+        if em_catalog.unique_pixels is not None:
+            pixels_np = np.arange(np.asarray(em_catalog.unique_pixels).size, dtype=np.int32)
+        else:
+            pixels_np = np.arange(np.asarray(em_catalog.zgals).shape[0], dtype=np.int32)
+    else:
+        pixels_np = np.asarray(pixels, dtype=np.int32).reshape(-1)
+
+    if max_pixels is not None and max_pixels > 0:
+        pixels_np = pixels_np[:max_pixels]
+
+    per_pixel = []
+    for pix in pixels_np:
+        fractions = _completion_clip_fractions_for_pixel(
+            int(pix), grids, survey, em_catalog
+        )
+        fractions["pixel"] = int(pix)
+        if em_catalog.unique_pixels is not None:
+            fractions["global_pixel"] = int(np.asarray(em_catalog.unique_pixels)[int(pix)])
+        per_pixel.append(fractions)
+
+    fields = [
+        "C_iso_clipped_fraction",
+        "C_eff_clipped_fraction",
+        "rho_miss_eff_clipped_fraction",
+    ]
+    summary: dict[str, object] = {
+        "n_zgrid": int(zgrid.size),
+        "z_min": float(zgrid[0]),
+        "z_max": float(zgrid[-1]),
+        "n_pixels_checked": int(len(per_pixel)),
+        "per_pixel": per_pixel,
+    }
+    for field in fields:
+        vals = np.array([item[field] for item in per_pixel], dtype=float)
+        summary[f"mean_{field}"] = float(vals.mean()) if vals.size else 0.0
+        summary[f"max_{field}"] = float(vals.max()) if vals.size else 0.0
+
+    return summary
+
+
 # ------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------

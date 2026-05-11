@@ -60,6 +60,8 @@ from darksirens.gw.populations.utils import (
 from darksirens.em.utils import load_survey
 from darksirens.inference.data import load_all_data, validate_loaded_survey_shapes
 from darksirens.inference.likelihood import make_likelihood
+from darksirens.em.completion import build_pixel_kde_cache, completion_clip_diagnostics
+from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog
 from darksirens.inference.sampling import run_sampler
 from darksirens.inference.prior import build_parameter_space, make_prior_transform
 from darksirens.utils.plotting import make_production_corner
@@ -170,7 +172,7 @@ def _print_parameter_table(
     """
     COSMO_FID  = {"H0": 67.74, "Om0": 0.3075}
     SURVEY_FID = {"log10n0": -2.0, "z50": 1.0, "w": 0.5,
-                  "delta": 0.0, "b_miss": 1.0, "alpha": 0.5}
+                  "delta": 0.0, "b_miss": 1.0, "alpha_miss": 0.5}
     pop_fid_map = {lbl: float(pop_params_fid[i])
                    for i, lbl in enumerate(pop_labels_all)}
 
@@ -364,6 +366,122 @@ def save_settings_json(
     return path
 
 
+
+def _completion_validation_survey_values(
+    prior_overrides: dict,
+    fixed_parameter_values: dict,
+) -> dict[str, float]:
+    """Choose representative survey values for dry-run clipping diagnostics."""
+    fid = {
+        "log10n0": -2.0,
+        "z50": 1.0,
+        "w": 0.5,
+        "delta": 0.0,
+        "b_miss": 1.0,
+        "alpha_miss": 0.5,
+    }
+    values = dict(fid)
+    for label in values:
+        if label in prior_overrides:
+            lo, hi = prior_overrides[label]
+            values[label] = 0.5 * (float(lo) + float(hi))
+        if label in fixed_parameter_values:
+            values[label] = float(fixed_parameter_values[label])
+    return values
+
+
+def run_completion_validation(
+    opts,
+    data: dict,
+    prior_overrides: dict,
+    fixed_parameter_values: dict,
+) -> str:
+    """Save a dry-run completion clipping diagnostic and return its path."""
+    required = ["zgals_catalog", "dzgals_catalog", "wgals_catalog", "ngals_catalog"]
+    if any(data.get(key) is None for key in required):
+        # Backward-compatible tests/callers may use unsuffixed catalog keys.
+        fallback = {
+            "zgals_catalog": "zgals",
+            "dzgals_catalog": "dzgals",
+            "wgals_catalog": "wgals",
+        }
+        for dst, src in fallback.items():
+            if data.get(dst) is None and data.get(src) is not None:
+                data[dst] = data[src]
+    full_z = data.get("zgals_catalog")
+    full_dz = data.get("dzgals_catalog")
+    full_w = data.get("wgals_catalog")
+    full_n = data.get("ngals_catalog")
+    if any(value is None for value in (full_z, full_dz, full_w, full_n)):
+        _fatal(
+            "--validate_completion requires a loaded galaxy catalog with "
+            "zgals/dzgals/wgals/ngals arrays."
+        )
+
+    pixels_pe = np.asarray(data["pixels_pe"], dtype=np.int32)
+    pixels_sel = np.asarray(data["pixels_sel"], dtype=np.int32)
+    unique_pixels = np.unique(np.concatenate([pixels_pe, pixels_sel])).astype(
+        np.int32, copy=False
+    )
+    max_pixels = max(1, int(opts.completion_validation_pixels))
+    unique_pixels = unique_pixels[:max_pixels]
+
+    dN_obs_kde, pixel_to_cache_idx = build_pixel_kde_cache(
+        unique_pixels=unique_pixels,
+        zgals=full_z,
+        n_pix_catalog=int(data.get("n_pix_catalog", np.asarray(full_z).shape[0])),
+        wgals=full_w,
+        ngals=full_n,
+    )
+
+    survey_values = _completion_validation_survey_values(
+        prior_overrides, fixed_parameter_values
+    )
+    cosmo = CosmoParams(
+        H0=float(fixed_parameter_values.get("H0", 67.74)),
+        Om0=float(fixed_parameter_values.get("Om0", 0.3075)),
+    )
+    survey = SurveyParams(
+        n0=10.0 ** survey_values["log10n0"],
+        z50=survey_values["z50"],
+        w=survey_values["w"],
+        delta=survey_values["delta"],
+        b_miss=survey_values["b_miss"],
+        alpha_miss=survey_values["alpha_miss"],
+    )
+    em_catalog = EMCatalog(
+        apix=data["apix"],
+        zgals=jnp.asarray(full_z[unique_pixels]),
+        dzgals=jnp.asarray(full_dz[unique_pixels]),
+        wgals=jnp.asarray(full_w[unique_pixels]),
+        ngals=jnp.asarray(full_n[unique_pixels], dtype=jnp.int32),
+        delta_g_pix_z=jnp.asarray(
+            data.get("delta_g_pix_z", jnp.zeros((1, dN_obs_kde.shape[1])))
+        ),
+        sigma_kernel=data["sigma_kernel"],
+        dN_obs_kde=dN_obs_kde,
+        pixel_to_cache_idx=pixel_to_cache_idx,
+        unique_pixels=jnp.asarray(unique_pixels, dtype=jnp.int32),
+    )
+    diagnostics = completion_clip_diagnostics(
+        cosmo=cosmo,
+        survey=survey,
+        em_catalog=em_catalog,
+        max_pixels=max_pixels,
+    )
+    diagnostics["survey_values"] = survey_values
+    diagnostics["cosmology_values"] = {"H0": float(cosmo.H0), "Om0": float(cosmo.Om0)}
+    diagnostics["prior_overrides"] = prior_overrides or None
+    diagnostics["fixed_parameter_values"] = fixed_parameter_values or None
+
+    os.makedirs(opts.save_path, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    path = os.path.join(opts.save_path, f"completion_validation__{timestamp}.json")
+    with open(path, "w") as f:
+        json.dump(diagnostics, f, indent=2)
+    return path
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -410,6 +528,11 @@ def main():
     g = optp.add_argument_group("Catalog")
     g.add_argument("--sigma_kernel", type=float, default=0.0)
     g.add_argument("--use_LSS",      type=str_to_bool, default=False, metavar="BOOL")
+    g.add_argument("--validate_completion", type=str_to_bool, default=False, metavar="BOOL",
+                   help=("Run a dry-run completion clipping diagnostic, save JSON under "
+                         "--save_path, and exit before building the likelihood."))
+    g.add_argument("--completion_validation_pixels", type=int, default=64, metavar="N",
+                   help="Maximum number of unique catalog pixels to inspect in --validate_completion.")
 
     g = optp.add_argument_group("Sampler")
     g.add_argument("--sampler",      required=True, choices=["jaxns", "dynesty", "emcee"])
@@ -494,6 +617,7 @@ def main():
     _row("Fix population",   "yes" if opts.fix_population else "no")
     _row("Fix survey",       "yes" if opts.fix_survey     else "no")
     _row("Prior overrides",  json.dumps(prior_overrides) if prior_overrides else "none")
+    _row("Validate completion", "yes" if opts.validate_completion else "no")
     if fixed_parameter_values:
         for lbl, val in fixed_parameter_values.items():
             _row(f"  fixed: {lbl}", val)
@@ -574,6 +698,16 @@ def main():
         gb = np.asarray(dg).nbytes / 1e9
         _ok(f"δ_g field shape:        {np.asarray(dg).shape}  ({gb:.3f} GB)")
     _end()
+
+    if opts.validate_completion:
+        _section("Completion validation dry run")
+        validation_path = run_completion_validation(
+            opts, data, prior_overrides, fixed_parameter_values
+        )
+        _ok(f"completion_validation JSON → {validation_path}")
+        _row("Action", "exiting before likelihood/sampling")
+        _end()
+        return
 
     # ── Parameter space ────────────────────────────────────────────
 
