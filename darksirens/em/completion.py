@@ -329,10 +329,12 @@ def _catalog_completion_inner(
     dN_exp_smooth = grids.dN_exp_smooth
     pvol          = grids.pvol
 
+    global_pix = pix if em_catalog.unique_pixels is None else em_catalog.unique_pixels[pix]
+
     # --- Step 1: Per-pixel observed dN/dz ---
     # Cache path: O(1) lookup — evaluated at trace time, no runtime branch.
     if em_catalog.dN_obs_kde is not None:
-        cache_idx = em_catalog.pixel_to_cache_idx[pix]
+        cache_idx = em_catalog.pixel_to_cache_idx[global_pix]
         dN_obs    = em_catalog.dN_obs_kde[cache_idx]   # (N_grid,)
     else:
         # Fallback: recompute on the fly (correct, slower).  This path is
@@ -350,7 +352,12 @@ def _catalog_completion_inner(
     rho_miss_iso = (1.0 - C_iso) * pvol
 
     # --- Step 4: LSS-modulated missing density ---
-    delta_g_z = delta_g_pix_z[pix]
+    # Compact catalogs pass ``pix`` as the compact row index.  Translate back
+    # to the global HEALPix pixel only for the LSS field, which remains a
+    # true full-pixel lookup when LSS is enabled.  Non-LSS runs carry a single
+    # dummy row.
+    delta_idx = jnp.where(delta_g_pix_z.shape[0] == 1, 0, global_pix)
+    delta_g_z = delta_g_pix_z[delta_idx]
     delta_g_z = delta_g_z - jnp.mean(delta_g_z)
     rho_miss_lss = rho_miss_iso * (1.0 + b_miss * delta_g_z)
 

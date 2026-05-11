@@ -515,6 +515,21 @@ def main():
             _ok(f"Catalog galaxies (PE pixels):  {int(np.asarray(ngals_pe).sum()):,}")
         if ngals_sel is not None:
             _ok(f"Catalog galaxies (sel pixels): {int(np.asarray(ngals_sel).sum()):,}")
+        catalog_memory = data.get("catalog_memory")
+        if catalog_memory is not None:
+            _ok(
+                "Unique catalog pixels:   "
+                f"PE {catalog_memory['unique_pe_pixels']:,}, "
+                f"selection {catalog_memory['unique_sel_pixels']:,}"
+            )
+            _ok(
+                "Duplicated catalog bytes avoided: "
+                f"{catalog_memory['duplicated_catalog_bytes_avoided'] / 1e9:.3f} GB"
+            )
+            _ok(
+                "Max galaxies/unique pixel: "
+                f"{catalog_memory['max_galaxies_per_unique_pixel']:,}"
+            )
 
     dg = data.get("delta_g_pix_z")
     if dg is not None:
