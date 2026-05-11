@@ -10,13 +10,20 @@ class CosmoParams(NamedTuple):
 
 
 class SurveyParams(NamedTuple):
-    """Parameters dictating galaxy survey completeness and selection."""
+    """Parameters dictating galaxy survey completeness and selection.
+
+    ``complete_empty_pixel_policy`` controls how the formally complete-catalog
+    prior treats catalog rows with zero real galaxies: ``0`` is the strict
+    policy (zero probability), while ``1`` enables a volume-prior robustness
+    approximation.
+    """
     n0: Any
     z50: Any
     w: Any
     delta: Any
     b_miss: Any
     alpha_miss: Any
+    complete_empty_pixel_policy: Any = 0
 
 
 class EMCatalog(NamedTuple):
