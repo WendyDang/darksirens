@@ -16,8 +16,10 @@ Four regimes are supported:
 
 2. ``"bright_sirens"``
    Counterpart-informed inference using a synthetic one-object catalog.
-   The prior is the same catalog-density model as ``dark_sirens_complete``
-   evaluated on the fixed counterpart redshift and sky position.
+   By default, the counterpart redshift prior is finite only for samples in
+   the global HEALPix counterpart pixel and is ``-inf`` elsewhere.  If the
+   catalog explicitly requests sky marginalization, the same redshift prior is
+   applied independent of sample sky pixel.
 
 3. ``"dark_sirens_complete"``
    EM catalog assumed 100 % complete.
@@ -142,6 +144,50 @@ def _log_prior_complete_catalog(
 
 
 @jit
+def _log_prior_bright_sirens(
+    z: jnp.ndarray,
+    pix: jnp.ndarray,
+    cosmo: CosmoParams,
+    survey: SurveyParams,
+    em_catalog: EMCatalog,
+) -> jnp.ndarray:
+    """
+    Bright-siren counterpart redshift prior with an explicit sky-pixel gate.
+
+    ``pix`` may contain either global HEALPix pixels or compact catalog row
+    indices.  For compact catalogs, ``em_catalog.unique_pixels`` maps each row
+    back to its global HEALPix pixel.  Unless
+    ``em_catalog.bright_siren_sky_marginalized`` is true, only samples whose
+    global pixel equals ``em_catalog.counterpart_pixel`` receive the
+    counterpart redshift prior; all other samples receive ``-inf``.
+    """
+    from .catalog import log_catalog_prior_vmap  # local import avoids circular
+
+    counterpart_pixel = em_catalog.counterpart_pixel
+    if counterpart_pixel is None:
+        if em_catalog.ngals is None:
+            counterpart_pixel = 0
+        elif em_catalog.unique_pixels is None:
+            counterpart_pixel = jnp.argmax(em_catalog.ngals > 0)
+        else:
+            counterpart_pixel = em_catalog.unique_pixels[jnp.argmax(em_catalog.ngals > 0)]
+
+    if em_catalog.unique_pixels is None:
+        global_pix = pix
+        counterpart_row = counterpart_pixel
+    else:
+        global_pix = jnp.take(em_catalog.unique_pixels, pix)
+        counterpart_row = jnp.argmax(em_catalog.unique_pixels == counterpart_pixel)
+
+    sky_marginalized = jnp.asarray(em_catalog.bright_siren_sky_marginalized)
+    prior_pix = jnp.where(sky_marginalized, counterpart_row, pix)
+    log_p_cp = log_catalog_prior_vmap(z, prior_pix, cosmo, survey, em_catalog)
+
+    in_counterpart_pixel = global_pix == counterpart_pixel
+    return jnp.where(sky_marginalized | in_counterpart_pixel, log_p_cp, -jnp.inf)
+
+
+@jit
 def _log_prior_dark_sirens(
     z: jnp.ndarray,
     pix: jnp.ndarray,
@@ -202,7 +248,7 @@ def _log_prior_dark_sirens(
 #: Signature: f(z, pix, cosmo, survey, em_catalog) → log_prior (array).
 PRIOR_REGISTRY: dict = {
     "spectral_sirens":      _log_prior_spectral_sirens,
-    "bright_sirens":        _log_prior_complete_catalog,
+    "bright_sirens":        _log_prior_bright_sirens,
     "dark_sirens_complete": _log_prior_complete_catalog,
     "dark_sirens":          _log_prior_dark_sirens,
 }

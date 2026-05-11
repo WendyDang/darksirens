@@ -13,10 +13,19 @@ GALAXY_AWARE_MODELS = ["dark_sirens", "dark_sirens_complete"]
 BRIGHT_SIREN_MODELS = ["bright_sirens"]
 
 
-def _compact_catalog_for_pixels(pixels, zgals, dzgals, wgals, ngals):
-    """Return compact catalog rows and sample→row lookup for pixels."""
+def _compact_catalog_for_pixels(pixels, zgals, dzgals, wgals, ngals, required_pixels=None):
+    """Return compact catalog rows and sample→row lookup for pixels.
+
+    ``required_pixels`` are included in the compact catalog even if no sample
+    falls in them.  The sample-to-row lookup still covers only ``pixels``.
+    """
     pixels = np.asarray(pixels, dtype=np.int32)
-    unique_pixels, sample_to_unique_idx = np.unique(pixels, return_inverse=True)
+    if required_pixels is None:
+        unique_pixels, sample_to_unique_idx = np.unique(pixels, return_inverse=True)
+    else:
+        required_pixels = np.asarray(required_pixels, dtype=np.int32).reshape(-1)
+        unique_pixels = np.unique(np.concatenate([pixels, required_pixels]))
+        sample_to_unique_idx = np.searchsorted(unique_pixels, pixels)
     unique_pixels = unique_pixels.astype(np.int32, copy=False)
     sample_to_unique_idx = sample_to_unique_idx.astype(np.int32, copy=False)
     return (
@@ -113,6 +122,10 @@ def load_all_data(opts):
     catalog_memory = None
     apix = 0.0
     sigma_kernel = 0.0
+    counterpart_pixel = None
+    bright_siren_sky_marginalized = bool(
+        getattr(opts, "bright_siren_sky_marginalized", False)
+    )
 
     # 2. Load survey data, or build the synthetic one-object catalog used by
     # bright sirens.  The counterpart is not a survey hyperparameter: it is
@@ -124,6 +137,7 @@ def load_all_data(opts):
         nside = int(opts.counterpart_nside)
         npix = hp.nside2npix(nside)
         cp_pix = int(hp.ang2pix(nside, np.pi / 2.0 - dec_cp, ra_cp))
+        counterpart_pixel = cp_pix
 
         zgals = np.zeros((npix, 1), dtype=float)
         dzgals = np.ones((npix, 1), dtype=float) * float(opts.counterpart_dz)
@@ -170,14 +184,23 @@ def load_all_data(opts):
     pixels_sel = hp.ang2pix(nside, jnp.pi/2 - decsels, rasels)
 
     if zgals is not None:
+        required_pixels = (
+            [counterpart_pixel]
+            if opts.universe_model in BRIGHT_SIREN_MODELS and counterpart_pixel is not None
+            else None
+        )
         (
             unique_pixels_pe, sample_to_unique_pe,
             zgals_pe, dzgals_pe, wgals_pe, ngals_pe,
-        ) = _compact_catalog_for_pixels(pixels_pe, zgals, dzgals, wgals, ngals)
+        ) = _compact_catalog_for_pixels(
+            pixels_pe, zgals, dzgals, wgals, ngals, required_pixels=required_pixels
+        )
         (
             unique_pixels_sel, sample_to_unique_sel,
             zgals_sel, dzgals_sel, wgals_sel, ngals_sel,
-        ) = _compact_catalog_for_pixels(pixels_sel, zgals, dzgals, wgals, ngals)
+        ) = _compact_catalog_for_pixels(
+            pixels_sel, zgals, dzgals, wgals, ngals, required_pixels=required_pixels
+        )
 
         catalog_memory = _catalog_memory_diagnostics(
             zgals, dzgals, wgals, pixels_pe, pixels_sel, ngals_pe, ngals_sel
@@ -245,7 +268,9 @@ def load_all_data(opts):
         dzgals_catalog=dzgals,
         wgals_catalog=wgals,
         catalog_memory=catalog_memory,
-        sigma_kernel=sigma_kernel
+        sigma_kernel=sigma_kernel,
+        counterpart_pixel=counterpart_pixel,
+        bright_siren_sky_marginalized=bright_siren_sky_marginalized
     )
 
     validate_loaded_survey_shapes(data)

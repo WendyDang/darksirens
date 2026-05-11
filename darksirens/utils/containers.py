@@ -67,6 +67,12 @@ class EMCatalog(NamedTuple):
         compact catalog row.  The likelihood passes this array as the
         GWEvent pixel index for compact catalogs; the field is retained on
         the catalog for diagnostics/introspection.
+    counterpart_pixel : int or None
+        Global HEALPix pixel containing the bright-siren electromagnetic
+        counterpart.  Used only by the bright-siren prior.
+    bright_siren_sky_marginalized : bool
+        If true, the bright-siren prior applies only the counterpart redshift
+        prior and does not require a GW sample to fall in ``counterpart_pixel``.
     """
     apix: Any
     zgals: Any
@@ -79,6 +85,8 @@ class EMCatalog(NamedTuple):
     pixel_to_cache_idx: Any    # (N_pix_catalog or N_catalog_rows,) | None
     unique_pixels: Any = None  # (N_catalog_rows,) | None
     sample_to_unique_idx: Any = None  # sample-shaped int array | None
+    counterpart_pixel: Any = None  # global HEALPix pixel for bright sirens | None
+    bright_siren_sky_marginalized: Any = False
 
 
 class GWEvent(NamedTuple):
