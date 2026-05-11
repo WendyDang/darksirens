@@ -52,6 +52,7 @@ from jax.scipy.special import logsumexp
 
 from darksirens.utils.utils import logdiffexp
 from darksirens.utils.containers import GWEvent, EMCatalog
+from darksirens.inference.events import pad_gw_event_to_multiple
 
 
 # ============================================================
@@ -151,9 +152,9 @@ def compute_selection_term(
     Parameters
     ----------
     gw_sel : GWEvent
-        Injection samples (detected).  If ``sel_batch_size`` is set,
-        the length must already be padded to a multiple of that value
-        (see ``events.pad_gw_event_to_multiple``).
+        Injection samples (detected).  If ``sel_batch_size`` is set and the
+        length is not divisible by the batch size, the event is padded with
+        explicit zero-prior-weight sentinel rows before scanning.
     em_catalog_sel : EMCatalog
         EM catalog sliced to the injection sky positions.
     log_weight_fn : callable(m1det, q, dL, chieff, pix, prior_wt, catalog) → array
@@ -166,7 +167,8 @@ def compute_selection_term(
         Number of observed GW events (for the N_eff reliability check).
     sel_batch_size : int or None
         If not None, process injections in chunks via ``lax.scan`` to
-        limit peak GPU memory.  The injection array must be pre-padded.
+        limit peak GPU memory.  Non-divisible inputs are padded internally;
+        padded rows have ``prior_wt == 0`` and contribute zero weight.
 
     Returns
     -------
@@ -175,6 +177,8 @@ def compute_selection_term(
     """
     def _batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b):
         ldw = log_weight_fn(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
+        valid = pwt_b > 0.0
+        ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
         return logsumexp(ldw), logsumexp(2.0 * ldw)
 
     if sel_batch_size is None:
@@ -190,8 +194,8 @@ def compute_selection_term(
     else:
         # --- Batched via lax.scan ---
         # Peak GPU memory: O(sel_batch_size × N_grid) instead of O(N_sel × N_grid).
-        # Requires N_sel % sel_batch_size == 0 (pad beforehand).
-        N_sel     = gw_sel.dL.shape[0]
+        gw_sel, _ = pad_gw_event_to_multiple(gw_sel, sel_batch_size)
+        N_sel = gw_sel.dL.shape[0]
         N_batches = N_sel // sel_batch_size
 
         def _scan_fn(_, batch_idx):

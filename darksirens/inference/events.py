@@ -100,32 +100,41 @@ def make_gw_event(
     )
 
 
-def pad_gw_event_to_multiple(event: GWEvent, multiple: int, fill_prior_wt: float = 1.0) -> GWEvent:
+def pad_gw_event_to_multiple(
+    event: GWEvent,
+    multiple: int,
+    fill_prior_wt: float = 0.0,
+) -> tuple[GWEvent, int]:
     """
     Pad a ``GWEvent`` so that its length is a multiple of ``multiple``.
 
-    Used when ``sel_batch_size`` is set: ``lax.scan`` requires the array
-    length to divide evenly into batches.  Padding with ``prior_wt = 1.0``
-    makes the log weight for padded entries equal to ``log_p_pop - 0``,
-    which can be large, so callers should also zero-out the contribution
-    from padded entries by design (e.g. the padded injections simply
-    inflate ``Ndraw`` if not handled).
-
-    Safer approach: pad ``dL`` to a sentinel that maps to a very high
-    redshift so ``log_p_pop → -inf`` for padded entries.
+    Used when ``sel_batch_size`` is set: ``lax.scan`` processes fixed-size
+    chunks, so callers either need ceiling batches with a mask or an input
+    length that divides evenly into batches.  This helper implements the
+    latter by appending sentinel injections whose ``prior_wt`` is exactly
+    zero.  Selection batching code treats ``prior_wt <= 0`` as a structural
+    mask and converts those entries to ``-inf`` log weight, so padded rows
+    contribute exactly zero to both first- and second-moment sums without
+    relying on any high-redshift/population heuristic.
 
     Parameters
     ----------
     event : GWEvent
     multiple : int
     fill_prior_wt : float
-        Fill value for ``prior_wt`` on padded entries.  Default 1.0.
+        Fill value for ``prior_wt`` on padded entries.  Default 0.0; values
+        ``<= 0`` are interpreted as an explicit padding mask by selection
+        log-sum-exp routines.
 
     Returns
     -------
-    GWEvent with length rounded up to the nearest ``multiple``.
-    int — number of padding entries added.
+    (GWEvent, int)
+        Event with length rounded up to the nearest ``multiple`` and the
+        number of padding entries added.
     """
+    if multiple <= 0:
+        raise ValueError("multiple must be positive")
+
     N = event.dL.shape[0]
     remainder = N % multiple
     if remainder == 0:
@@ -136,7 +145,6 @@ def pad_gw_event_to_multiple(event: GWEvent, multiple: int, fill_prior_wt: float
     def _pad1d(arr, fill=0.0):
         return jnp.concatenate([arr, jnp.full(pad, fill, dtype=arr.dtype)])
 
-    # dL=1e5 Mpc → z≈20 → log_p_pop → -inf for any sensible mass model
     padded = make_gw_event(
         m1det    = _pad1d(event.m1det,    fill=30.0),
         m2det    = _pad1d(event.m2det,    fill=30.0),
