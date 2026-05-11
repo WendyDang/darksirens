@@ -54,7 +54,7 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.gw.populations import get_fixed_population_params, pop_model_prior_parser
 from darksirens.em.utils import load_survey
-from darksirens.inference.data import load_all_data
+from darksirens.inference.data import load_all_data, validate_loaded_survey_shapes
 from darksirens.inference.likelihood import make_likelihood
 from darksirens.inference.sampling import run_sampler
 from darksirens.inference.prior import build_parameter_space, make_prior_transform
@@ -498,6 +498,7 @@ def main():
     _section("Loading data")
     print("  │")
     data = load_all_data(opts)
+    validate_loaded_survey_shapes(data)
 
     nEvents = data["nEvents"]
     nsamp   = data["nsamp"]
@@ -508,7 +509,7 @@ def main():
     _ok(f"Selection injections:   {int(Ndraw):,} total generated")
 
     if opts.survey_path:
-        ngals_pe  = data.get("ngals",     None)
+        ngals_pe  = data.get("ngals_pe",  None)
         ngals_sel = data.get("ngals_sel", None)
         _ok(f"HEALPix nside:          {nside}")
         if ngals_pe  is not None:

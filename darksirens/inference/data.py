@@ -29,6 +29,52 @@ def _compact_catalog_for_pixels(pixels, zgals, dzgals, wgals, ngals):
     )
 
 
+def validate_loaded_survey_shapes(data):
+    """Validate compact per-pixel galaxy counts returned by ``load_all_data``.
+
+    ``ngals_pe`` and ``ngals_sel`` are compact catalog-row arrays, so they
+    should match the corresponding compact pixel arrays whenever a survey (or
+    bright-siren counterpart catalog) is available.
+    """
+    if data.get("zgals_catalog") is None:
+        return
+
+    compact_shape_checks = (
+        ("ngals_pe", "unique_pixels_pe", "PE"),
+        ("ngals_sel", "unique_pixels_sel", "selection"),
+    )
+    for ngals_key, pixels_key, label in compact_shape_checks:
+        ngals_value = data.get(ngals_key)
+        pixels_value = data.get(pixels_key)
+        if ngals_value is None or pixels_value is None:
+            continue
+        ngals_n = int(np.asarray(ngals_value).shape[0])
+        pixels_n = int(np.asarray(pixels_value).shape[0])
+        if ngals_n != pixels_n:
+            raise ValueError(
+                f"Survey {label} count shape mismatch: {ngals_key}.shape[0] "
+                f"({ngals_n}) must equal {pixels_key}.shape[0] ({pixels_n})."
+            )
+
+    sample_shape_checks = (
+        ("sample_to_unique_pe", "pixels_pe", "PE"),
+        ("sample_to_unique_sel", "pixels_sel", "selection"),
+    )
+    for sample_key, pixels_key, label in sample_shape_checks:
+        sample_value = data.get(sample_key)
+        pixels_value = data.get(pixels_key)
+        if sample_value is None or pixels_value is None:
+            continue
+        sample_n = int(np.asarray(sample_value).shape[0])
+        pixels_n = int(np.asarray(pixels_value).shape[0])
+        if sample_n != pixels_n:
+            raise ValueError(
+                f"Survey {label} sample map shape mismatch: "
+                f"{sample_key}.shape[0] ({sample_n}) must equal "
+                f"{pixels_key}.shape[0] ({pixels_n})."
+            )
+
+
 def _catalog_memory_diagnostics(zgals, dzgals, wgals, pixels_pe, pixels_sel, ngals_pe, ngals_sel):
     """Summarise memory saved by compact unique-pixel catalog views."""
     unique_pe = np.unique(np.asarray(pixels_pe, dtype=np.int32))
@@ -164,7 +210,7 @@ def load_all_data(opts):
         zgals_pe=zgals_pe,
         dzgals_pe=dzgals_pe,
         wgals_pe=wgals_pe,
-        ngals=ngals_pe,
+        ngals_pe=ngals_pe,
         unique_pixels_pe=unique_pixels_pe,
         sample_to_unique_pe=sample_to_unique_pe,
 
@@ -201,6 +247,8 @@ def load_all_data(opts):
         catalog_memory=catalog_memory,
         sigma_kernel=sigma_kernel
     )
+
+    validate_loaded_survey_shapes(data)
 
     nEvents_check = data.get("nEvents", "Unknown")
     nside_check = data.get("nside", "N/A")
