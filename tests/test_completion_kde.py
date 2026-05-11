@@ -51,3 +51,44 @@ def test_build_pixel_kde_cache_masks_empty_and_partially_padded_pixels():
         np.asarray(dN_obs_kde[pixel_to_cache_idx[0]]), 0.0, atol=1e-14
     )
     assert float(dN_obs_kde[pixel_to_cache_idx[1], 0]) < 1e-5
+
+
+def test_completion_clip_diagnostics_reports_grid_fractions():
+    from darksirens.em.completion import completion_clip_diagnostics
+    from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog
+
+    zgals = jnp.array([[0.1, 0.2]])
+    wgals = jnp.ones_like(zgals)
+    ngals = jnp.array([2], dtype=jnp.int32)
+    dN_obs_kde, pixel_to_cache_idx = build_pixel_kde_cache(
+        unique_pixels=np.array([0], dtype=np.int32),
+        zgals=zgals,
+        n_pix_catalog=1,
+        ngals=ngals,
+    )
+    catalog = EMCatalog(
+        apix=1.0,
+        zgals=zgals,
+        dzgals=jnp.full_like(zgals, 0.01),
+        wgals=wgals,
+        ngals=ngals,
+        delta_g_pix_z=jnp.zeros((1, len(zgrid))),
+        sigma_kernel=0.01,
+        dN_obs_kde=dN_obs_kde,
+        pixel_to_cache_idx=pixel_to_cache_idx,
+    )
+    diagnostics = completion_clip_diagnostics(
+        CosmoParams(H0=67.74, Om0=0.3075),
+        SurveyParams(n0=1e-2, z50=1.0, w=0.5, delta=0.0, b_miss=1.0, alpha_miss=0.5),
+        catalog,
+        max_pixels=1,
+    )
+
+    assert diagnostics["n_zgrid"] == len(zgrid)
+    assert diagnostics["n_pixels_checked"] == 1
+    for key in (
+        "mean_C_iso_clipped_fraction",
+        "mean_C_eff_clipped_fraction",
+        "mean_rho_miss_eff_clipped_fraction",
+    ):
+        assert 0.0 <= diagnostics[key] <= 1.0

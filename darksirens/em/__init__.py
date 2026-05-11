@@ -66,6 +66,7 @@ from .catalog import log_catalog_prior, log_catalog_prior_vmap
 from .completion import (
     catalog_completion,
     catalog_completion_vmap,
+    completion_clip_diagnostics,
     compute_lss_overdensity,
 )
 from .utils import zgrid, zMax, load_survey
@@ -83,6 +84,7 @@ __all__ = [
     # Completion
     "catalog_completion",
     "catalog_completion_vmap",
+    "completion_clip_diagnostics",
     "compute_lss_overdensity",
     # Grid
     "zgrid",

@@ -54,6 +54,8 @@ darksirens_inference \
 
 - `--sigma_kernel`: smoothing kernel width used by catalog-related calculations.
 - `--use_LSS`: include large-scale-structure overdensity where supported.
+- `--validate_completion`: run a dry-run completion clipping diagnostic, save `completion_validation__*.json` under `--save_path`, and exit before likelihood construction or sampling.
+- `--completion_validation_pixels`: maximum number of unique catalog pixels to inspect during `--validate_completion`; defaults to `64`.
 
 ### Sampler options
 
@@ -69,6 +71,7 @@ darksirens_inference \
 ### Performance options
 
 - `--sel_batch_size`: optional injection-selection batch size.
+- `--norm_nmass`, `--norm_nq`, `--norm_nchi`: mass, mass-ratio, and spin grid sizes used for GW-population normalization quadrature. They default to `500`, `200`, and `200`, respectively, and can also be set with `DARKSIRENS_GW_N_MASS`, `DARKSIRENS_GW_N_Q`, and `DARKSIRENS_GW_N_CHI`. The inference command prints the active values and saves them in `settings.json` under `normalization_grid`.
 
 ## `darksirens_analyze`
 
