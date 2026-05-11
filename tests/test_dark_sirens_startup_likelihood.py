@@ -161,7 +161,9 @@ def test_dark_sirens_cache_is_built_once_for_unique_pixels(monkeypatch):
 
     cache_calls = []
 
-    def fake_build_pixel_kde_cache(unique_pixels, zgals, n_pix_catalog):
+    def fake_build_pixel_kde_cache(
+        unique_pixels, zgals, n_pix_catalog, wgals=None, ngals=None
+    ):
         unique_pixels = np.asarray(unique_pixels, dtype=np.int32)
         cache_calls.append(unique_pixels.copy())
         pixel_to_cache_idx = np.zeros(n_pix_catalog, dtype=np.int32)

@@ -41,7 +41,7 @@ lookup; when absent it falls back to the full KDE (correct, slower).
 
 Public API
 ----------
-build_pixel_kde_cache(unique_pixels, zgals, n_pix_catalog)
+build_pixel_kde_cache(unique_pixels, zgals, n_pix_catalog, wgals=None, ngals=None)
     Precompute KDE grids for unique pixels.  Call once in make_likelihood.
 
 catalog_completion(z, pix, cosmo, survey, em_catalog)
@@ -51,7 +51,7 @@ catalog_completion_vmap(z, pix, cosmo, survey, em_catalog)
     Same signature, vectorised over arrays of (z, pix) pairs.
     Computes dN_exp_smooth once internally, then vmaps the inner function.
 
-compute_lss_overdensity(zgals, nside)
+compute_lss_overdensity(zgals, nside, wgals=None, ngals=None)
     Pre-computes delta_g(pix, z) on the global zgrid for all HEALPix pixels.
     Call once at startup and store the result in EMCatalog.delta_g_pix_z.
 """
@@ -89,17 +89,40 @@ def _build_kernel() -> jnp.ndarray:
 # Per-pixel observed dN/dz via Gaussian KDE
 # ------------------------------------------------------------
 
-def _kde_dndz_obs(pix: int, zgals: jnp.ndarray) -> jnp.ndarray:
+def _kde_dndz_obs(
+    pix: int,
+    zgals: jnp.ndarray,
+    wgals: jnp.ndarray | None = None,
+    ngals: jnp.ndarray | None = None,
+) -> jnp.ndarray:
     """
     Kernel density estimate of dN_obs/dz for pixel ``pix`` on ``zgrid``.
 
+    The observed-count numerator for completeness uses *raw galaxy counts*,
+    not luminosity/completeness weights.  This keeps dN_obs/dz as the direct
+    number-count counterpart to the expected ``n0 * dV/dz * (1+z)^delta``
+    model.  ``catalog.py`` uses ``wgals`` as base weights for the normalized
+    catalog redshift prior; here ``wgals`` is used only as a real-galaxy mask
+    when ``ngals`` is unavailable, so padded zero-redshift slots never add
+    artificial low-z density.
+
     Uses module-level ``_K_SMOOTH``.  Safe to vmap over ``pix`` with
-    ``in_axes=(0, None)`` — used by ``build_pixel_kde_cache``.
+    ``in_axes=(0, None, None, None)`` — used by ``build_pixel_kde_cache``.
 
     Parameters
     ----------
     pix : int or scalar jnp array
     zgals : (N_pix_catalog, N_max_gals)
+        Padded galaxy redshift array.
+    wgals : (N_pix_catalog, N_max_gals), optional
+        Padded galaxy weight array.  A 1D array supplied here is interpreted
+        as ``ngals`` for backward-compatible positional calls.  When ``ngals``
+        is not supplied, entries with ``wgals[pix] > 0`` are treated as real
+        galaxies.  The positive weights are not used as amplitudes in
+        dN_obs/dz.
+    ngals : (N_pix_catalog,), optional
+        Number of real galaxies per pixel.  Preferred over ``wgals`` when
+        both are supplied.
 
     Returns
     -------
@@ -109,12 +132,28 @@ def _kde_dndz_obs(pix: int, zgals: jnp.ndarray) -> jnp.ndarray:
     if _K_SMOOTH is None:
         _K_SMOOTH = _build_kernel()
 
+    # Accept a 1D ngals array passed positionally as the third argument.
+    if ngals is None and wgals is not None and wgals.ndim == 1:
+        ngals = wgals
+        wgals = None
+
+    if wgals is None and ngals is None:
+        raise ValueError(
+            "_kde_dndz_obs requires either wgals or ngals to mask padded galaxies"
+        )
+
     zs = zgals[pix]  # (N_max_gals,) — padded, zeros for empty slots
-    # Evaluate Gaussian centred at each galaxy position on the full zgrid.
-    # Shape: (N_grid, N_max_gals) → sum over galaxies → (N_grid,)
-    raw = jnp.exp(
+    if ngals is not None:
+        real_gal = jnp.arange(zs.shape[0]) < ngals[pix]
+    else:
+        real_gal = wgals[pix] > 0
+
+    # Evaluate Gaussian centred at each real galaxy position on the full zgrid.
+    # Shape: (N_grid, N_max_gals) → masked sum over galaxies → (N_grid,)
+    gaussian = jnp.exp(
         -0.5 * ((zgrid[:, None] - zs[None, :]) / _SIGMA_SMOOTH) ** 2
-    ).sum(axis=1)
+    )
+    raw = (gaussian * real_gal[None, :].astype(gaussian.dtype)).sum(axis=1)
     # Smooth with the row-normalised kernel.
     return _K_SMOOTH @ raw  # (N_grid,)
 
@@ -127,6 +166,8 @@ def build_pixel_kde_cache(
     unique_pixels: np.ndarray,
     zgals: jnp.ndarray,
     n_pix_catalog: int,
+    wgals: jnp.ndarray | None = None,
+    ngals: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Precompute ``_kde_dndz_obs`` for all unique pixels in the PE+selection sets.
@@ -145,6 +186,12 @@ def build_pixel_kde_cache(
     n_pix_catalog : int
         Total number of HEALPix pixels in the catalog
         (``hp.nside2npix(nside)``).
+    wgals : (N_pix_catalog, N_max_gals), optional
+        Galaxy weight array used only to identify real (positive-weight)
+        entries when ``ngals`` is unavailable.
+    ngals : (N_pix_catalog,), optional
+        Number of real galaxies per pixel.  Preferred over ``wgals`` when
+        both are supplied.
 
     Returns
     -------
@@ -158,12 +205,26 @@ def build_pixel_kde_cache(
     global _K_SMOOTH
     if _K_SMOOTH is None:
         _K_SMOOTH = _build_kernel()
+    # Accept a 1D ngals array passed positionally as the fourth argument.
+    if ngals is None and wgals is not None and jnp.asarray(wgals).ndim == 1:
+        ngals = wgals
+        wgals = None
+
+    if wgals is None and ngals is None:
+        raise ValueError(
+            "build_pixel_kde_cache requires either wgals or ngals to mask padded galaxies"
+        )
+
+    wgals_jax = None if wgals is None else jnp.asarray(wgals)
+    ngals_jax = None if ngals is None else jnp.asarray(ngals)
 
     # Batch KDE over unique pixels — one jit+vmap call, not a Python loop.
-    _batch_kde = jit(vmap(_kde_dndz_obs, in_axes=(0, None)))
+    _batch_kde = jit(vmap(_kde_dndz_obs, in_axes=(0, None, None, None)))
     dN_obs_kde = _batch_kde(
         jnp.asarray(unique_pixels, dtype=jnp.int32),
         jnp.asarray(zgals),
+        wgals_jax,
+        ngals_jax,
     )  # (N_unique, N_grid)
 
     # Dense lookup array: pixel → index in dN_obs_kde
@@ -261,6 +322,8 @@ def _catalog_completion_inner(
         survey.z50, survey.w, survey.delta, survey.b_miss, survey.alpha_miss,
     )
     zgals         = em_catalog.zgals
+    wgals         = em_catalog.wgals
+    ngals         = em_catalog.ngals
     delta_g_pix_z = em_catalog.delta_g_pix_z
 
     dN_exp_smooth = grids.dN_exp_smooth
@@ -275,7 +338,9 @@ def _catalog_completion_inner(
         # Fallback: recompute on the fly (correct, slower).  This path is
         # retained only for tests/backward compatibility; production
         # dark-siren inference errors before constructing an uncached catalog.
-        dN_obs = _kde_dndz_obs(pix, zgals)             # (N_grid,)
+        dN_obs = _kde_dndz_obs(
+            pix, zgals, wgals=wgals, ngals=ngals
+        )  # (N_grid,)
 
     # --- Step 2: Differential completeness curve ---
     dN_exp_safe = jnp.where(dN_exp_smooth > 0.0, dN_exp_smooth, 1.0)
@@ -367,7 +432,12 @@ def catalog_completion_vmap(
     return _catalog_completion_inner_vmap(z, pix, grids, survey, em_catalog)
 
 
-def compute_lss_overdensity(zgals: jnp.ndarray, nside: int) -> jnp.ndarray:
+def compute_lss_overdensity(
+    zgals: jnp.ndarray,
+    nside: int,
+    wgals: jnp.ndarray | None = None,
+    ngals: jnp.ndarray | None = None,
+) -> jnp.ndarray:
     """
     Pre-compute the LSS overdensity field delta_g(pix, z) on ``zgrid``.
 
@@ -377,6 +447,11 @@ def compute_lss_overdensity(zgals: jnp.ndarray, nside: int) -> jnp.ndarray:
     ----------
     zgals : (N_pix, N_max_gals) galaxy redshifts (padded).
     nside : HEALPix nside.
+    wgals : (N_pix, N_max_gals), optional
+        Galaxy weights used only as a real-galaxy mask when ``ngals`` is not
+        supplied.
+    ngals : (N_pix,), optional
+        Number of real galaxies per pixel.  Preferred over ``wgals``.
 
     Returns
     -------
@@ -388,10 +463,22 @@ def compute_lss_overdensity(zgals: jnp.ndarray, nside: int) -> jnp.ndarray:
     global _K_SMOOTH
     if _K_SMOOTH is None:
         _K_SMOOTH = _build_kernel()
+    # Accept a 1D ngals array passed positionally as the third mask argument.
+    if ngals is None and wgals is not None and jnp.asarray(wgals).ndim == 1:
+        ngals = wgals
+        wgals = None
+
+    if wgals is None and ngals is None:
+        raise ValueError(
+            "compute_lss_overdensity requires either wgals or ngals to mask padded galaxies"
+        )
 
     # KDE for every pixel, then smooth
-    _all_kde = jit(vmap(_kde_dndz_obs, in_axes=(0, None)))(
-        jnp.arange(n_pix, dtype=jnp.int32), jnp.asarray(zgals)
+    _all_kde = jit(vmap(_kde_dndz_obs, in_axes=(0, None, None, None)))(
+        jnp.arange(n_pix, dtype=jnp.int32),
+        jnp.asarray(zgals),
+        None if wgals is None else jnp.asarray(wgals),
+        None if ngals is None else jnp.asarray(ngals),
     )  # (N_pix, N_grid)
 
     mean_density = _all_kde.mean(axis=0, keepdims=True)  # (1, N_grid)

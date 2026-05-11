@@ -153,7 +153,12 @@ def load_all_data(opts):
     print(f"[*] Preparing LSS/Overdensity Field...")
     if opts.universe_model in GALAXY_AWARE_MODELS and opts.use_LSS:
         print(f"    - Calculating high-resolution overdensity grid...")
-        delta_g_pix_z = compute_lss_overdensity(data["zgals"], nside_check)
+        delta_g_pix_z = compute_lss_overdensity(
+            data["zgals"],
+            nside_check,
+            wgals=data.get("wgals"),
+            ngals=data.get("ngals_catalog"),
+        )
     else:
         print(f"    - Non-LSS run. Creating memory-efficient dummy (1, {len(zgrid)}) grid.")
         # We use shape (1, nz) to satisfy JAX broadcasting without 93GB allocations

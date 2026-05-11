@@ -224,7 +224,11 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     zgals_catalog = _barrier(_to_jax(_catalog_key("zgals_catalog", "zgals")))
     dzgals_catalog = _barrier(_to_jax(_catalog_key("dzgals_catalog", "dzgals")))
     wgals_catalog = _barrier(_to_jax(_catalog_key("wgals_catalog", "wgals")))
-    ngals_catalog = _barrier(_to_jax("ngals_catalog"))
+    ngals_catalog_raw = data.get("ngals_catalog")
+    ngals_catalog = (
+        _barrier(jnp.asarray(ngals_catalog_raw, dtype=jnp.int32))
+        if ngals_catalog_raw is not None else None
+    )
     delta_g_pix_z = _barrier(_to_jax("delta_g_pix_z"))
     sigma_kernel = data["sigma_kernel"]
 
@@ -235,6 +239,8 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     pixel_to_cache_idx = None
     cache_required = universe_model in DARK_SIREN_CACHE_MODELS
     survey_zgals = data.get(_catalog_key("zgals_catalog", "zgals"))
+    survey_wgals = data.get(_catalog_key("wgals_catalog", "wgals"))
+    survey_ngals = data.get("ngals_catalog")
     n_pix_catalog = data.get("n_pix_catalog")
     pixels_pe_raw = data.get("pixels_pe")
     pixels_sel_raw = data.get("pixels_sel")
@@ -245,6 +251,10 @@ def make_likelihood(opts, data: dict, pop_params_fid,
                 ("survey galaxy redshifts", survey_zgals),
                 ("PE pixels", pixels_pe_raw),
                 ("selection pixels", pixels_sel_raw),
+                (
+                    "survey galaxy mask (wgals or ngals)",
+                    survey_wgals if survey_wgals is not None else survey_ngals,
+                ),
             ) if value is None
         ]
         if missing_cache_inputs:
@@ -268,6 +278,8 @@ def make_likelihood(opts, data: dict, pop_params_fid,
                 unique_pixels=unique_pixels,
                 zgals=survey_zgals,
                 n_pix_catalog=int(n_pix_catalog),
+                wgals=survey_wgals,
+                ngals=survey_ngals,
             )
 
     dN_obs_kde = _barrier(dN_obs_kde) if dN_obs_kde is not None else None
