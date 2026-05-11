@@ -69,6 +69,7 @@ darksirens_inference \
 ### Performance options
 
 - `--sel_batch_size`: optional injection-selection batch size.
+- `--norm_nmass`, `--norm_nq`, `--norm_nchi`: mass, mass-ratio, and spin grid sizes used for GW-population normalization quadrature. They default to `500`, `200`, and `200`, respectively, and can also be set with `DARKSIRENS_GW_N_MASS`, `DARKSIRENS_GW_N_Q`, and `DARKSIRENS_GW_N_CHI`. The inference command prints the active values and saves them in `settings.json` under `normalization_grid`.
 
 ## `darksirens_analyze`
 

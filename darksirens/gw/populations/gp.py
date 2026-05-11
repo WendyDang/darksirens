@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from tinygp import GaussianProcess, kernels
 
 from .base import MassComponent, PairingModel, ParamSpec
-from .utils import sfilter_low, sfilter_high, MASS_GRID
+from .utils import sfilter_low, sfilter_high, get_mass_grid
 
 @dataclass
 class GaussianProcessMass1D(MassComponent):
@@ -21,8 +21,9 @@ class GaussianProcessMass1D(MassComponent):
     def _eval_unnorm(self, m, t):
         mmin, mmax, dmmin, dmmax = t[0], t[1], t[2], t[3]
         alpha, amp, ls = t[4], t[5], t[6]
-        y_nodes = jnp.array(t[7:18]) 
-        log_MASS_GRID = jnp.log(MASS_GRID)
+        y_nodes = jnp.array(t[7:18])
+        mass_grid = get_mass_grid()
+        log_MASS_GRID = jnp.log(mass_grid)
         log_nodes = jnp.linspace(jnp.log(2.0), jnp.log(100.0), 11)
 
         def mean_fn(x):
@@ -31,11 +32,11 @@ class GaussianProcessMass1D(MassComponent):
         kernel = (amp**2) * kernels.Matern52(scale=ls)
         gp_prior = GaussianProcess(kernel=kernel, X=log_nodes, mean=mean_fn, diag=1e-5)
         _, gp_cond = gp_prior.condition(y_nodes, log_MASS_GRID)
-        
+
         logpm_grid = gp_cond.loc
-        S_grid = sfilter_low(MASS_GRID, mmin, dmmin) * sfilter_high(MASS_GRID, mmax, dmmax)
+        S_grid = sfilter_low(mass_grid, mmin, dmmin) * sfilter_high(mass_grid, mmax, dmmax)
         pm_grid = S_grid * jnp.exp(logpm_grid)
-        return jnp.interp(m, MASS_GRID, pm_grid, left=0.0, right=0.0)
+        return jnp.interp(m, mass_grid, pm_grid, left=0.0, right=0.0)
 
 @dataclass
 class GaussianProcessMassRatio1D(PairingModel):
@@ -58,7 +59,7 @@ class GaussianProcessMassRatio1D(PairingModel):
         kernel = (amp**2) * kernels.Matern52(scale=ls)
         gp_prior = GaussianProcess(kernel=kernel, X=q_nodes, mean=mean_fn, diag=1e-4)
         _, gp_cond = gp_prior.condition(y_nodes, q_eval_grid)
-        
+
         log_pq_grid = jnp.nan_to_num(gp_cond.loc, nan=-20.0)
         log_pq_grid = jnp.clip(log_pq_grid, -10.0, 10.0)
         pq_grid = jnp.exp(log_pq_grid)
@@ -66,7 +67,7 @@ class GaussianProcessMassRatio1D(PairingModel):
         pq = jnp.interp(q, q_eval_grid, pq_grid, left=0.0, right=0.0)
         m1_b, q_b = jnp.broadcast_arrays(m1, q)
         m2 = q_b * m1_b
-        
+
         smooth_cut = sfilter_low(m2, m_min, dm_min)
         smooth_cut = jnp.nan_to_num(smooth_cut, nan=0.0)
         p = smooth_cut * pq
@@ -109,13 +110,13 @@ class GaussianProcessPairing2D(PairingModel):
         kernel = (amp**2) * kernels.Matern52()
         gp_prior = GaussianProcess(kernel=kernel, X=X_nodes_scaled, mean=mean_fn, diag=1e-2)
         _, gp_cond = gp_prior.condition(y_nodes, X_test_scaled)
-        
+
         safe_loc = jnp.nan_to_num(gp_cond.loc, nan=-20.0)
         log_pq = jnp.clip(safe_loc.reshape(shape), -10.0, 10.0)
         p = jnp.exp(log_pq)
 
         m2 = q_b * m1_b
         smooth_cut = sfilter_low(m2, m_min, dm_min)
-        smooth_cut = jnp.nan_to_num(smooth_cut, nan=0.0) 
+        smooth_cut = jnp.nan_to_num(smooth_cut, nan=0.0)
         p = smooth_cut * p
         return jnp.where(m2 < m_min, 1e-20, p)

@@ -15,6 +15,7 @@ Try one or more of the following:
 - Set `--sel_batch_size` for the inference command.
 - Lower `--nlive` during test runs.
 - Reduce analyzer grid sizes (`--nm`, `--nq`, `--nz`, `--nchi`).
+- Keep GW-population normalization grids dimension-specific (`--norm_nmass`, `--norm_nq`, `--norm_nchi`) rather than raising every grid for one narrow feature.
 - Run a fixed-parameter smoke test before a full production run.
 
 ## JAX preallocation issues

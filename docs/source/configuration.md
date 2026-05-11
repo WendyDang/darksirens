@@ -55,6 +55,18 @@ The dark-siren incompleteness model uses survey/completion parameters such as:
 
 Population parameters depend on `--pop_model`. Use a small dry run to print the parameter table before committing compute time to a production job.
 
+## Normalization-grid tuning
+
+GW-population mass, mass-ratio, and spin components are normalized on cached trapezoid grids. The defaults (`--norm_nmass 500 --norm_nq 200 --norm_nchi 200`) are intended for development and moderate analyses. You can change individual dimensions from the command line or with the environment variables `DARKSIRENS_GW_N_MASS`, `DARKSIRENS_GW_N_Q`, and `DARKSIRENS_GW_N_CHI`; the active values are printed at startup and saved in `settings.json` as `normalization_grid`.
+
+For production 500-event analyses, especially when priors allow minimum smoothing widths such as `\delta m_{\min}=0.01` or `\sigma_\chi=0.01`, use at least:
+
+- `--norm_nmass 2000` for power-law and broken-power-law mass edges.
+- `--norm_nq 1000` for mass-ratio normalizations with low-mass systems near the secondary-mass cutoff.
+- `--norm_nchi 1000` for narrow effective-spin components.
+
+If only one distribution has narrow features, increase only the corresponding grid rather than all three dimensions. For final evidence runs or sensitivity checks, compare against a higher-resolution rerun such as `--norm_nmass 5000 --norm_nq 3000 --norm_nchi 3000` and confirm posterior and evidence changes are negligible for the science target.
+
 ## Performance tuning
 
 - Increase `--nlive` for more reliable nested-sampling evidences in high dimensions.
