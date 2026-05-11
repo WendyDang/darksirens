@@ -53,6 +53,10 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 
 from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.gw.populations import get_fixed_population_params, pop_model_prior_parser
+from darksirens.gw.populations.utils import (
+    configure_normalization_grids,
+    normalization_grid_settings,
+)
 from darksirens.em.utils import load_survey
 from darksirens.inference.data import load_all_data, validate_loaded_survey_shapes
 from darksirens.inference.likelihood import make_likelihood
@@ -343,6 +347,7 @@ def save_settings_json(
     d["lower_bound"] = list(map(float, lower_bound))
     d["upper_bound"] = list(map(float, upper_bound))
     d.update(meta)
+    d["normalization_grid"] = normalization_grid_settings().to_dict()
 
     d["environment"] = {
         "jax_version":    jax.__version__,
@@ -418,8 +423,23 @@ def main():
 
     g = optp.add_argument_group("Performance")
     g.add_argument("--sel_batch_size", type=int, default=None, metavar="N")
+    g.add_argument("--norm_nmass", type=int, default=None, metavar="N",
+                   help="Mass-grid size for GW-population normalisation (env: DARKSIRENS_GW_N_MASS).")
+    g.add_argument("--norm_nq", type=int, default=None, metavar="N",
+                   help="Mass-ratio-grid size for GW-population normalisation (env: DARKSIRENS_GW_N_Q).")
+    g.add_argument("--norm_nchi", type=int, default=None, metavar="N",
+                   help="Spin-grid size for GW-population normalisation (env: DARKSIRENS_GW_N_CHI).")
 
     opts = optp.parse_args()
+
+    try:
+        configure_normalization_grids(
+            n_mass=opts.norm_nmass,
+            n_q=opts.norm_nq,
+            n_chi=opts.norm_nchi,
+        )
+    except ValueError as e:
+        _fatal(str(e))
 
     prior_overrides        = parse_json_arg(opts.prior_overrides,        "prior_overrides")
     fixed_parameter_values = parse_json_arg(opts.fixed_parameter_values, "fixed_parameter_values")
@@ -492,6 +512,10 @@ def main():
         _row("  steps",   opts.nsteps)
     _row("  seed", opts.seed)
     print("  │")
+    norm_grid = normalization_grid_settings()
+    _row("Norm grids", (
+        f"mass={norm_grid.n_mass}, q={norm_grid.n_q}, chi={norm_grid.n_chi}"
+    ))
     _row("JAX backend", jax.default_backend())
     _row("JAX devices",  ", ".join(str(d) for d in jax.devices()))
     print("  │")

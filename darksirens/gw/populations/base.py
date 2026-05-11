@@ -53,7 +53,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import jax.numpy as jnp
 
-from .utils import MASS_GRID, Q_GRID, CHI_GRID, M_LO
+from .utils import get_mass_grid, get_q_grid, get_chi_grid, M_LO
 
 
 # ── Parameter bookkeeping ────────────────────────────────────────────────────
@@ -115,7 +115,8 @@ class MassComponent(ABC):
         Normalisation integral over MASS_GRID.
         Depends only on theta — call once per proposal, reuse across samples.
         """
-        return jnp.trapezoid(self._eval_unnorm(MASS_GRID, theta), MASS_GRID)
+        mass_grid = get_mass_grid()
+        return jnp.trapezoid(self._eval_unnorm(mass_grid, theta), mass_grid)
 
     def __call__(self, m, theta, norm=None):
         p = self._eval_unnorm(m, theta)
@@ -140,8 +141,9 @@ class PairingModel(ABC):
         # cannot be lifted out of the per-sample loop.
         p       = self._eval_unnorm(m1, q, m_min, dm_min, theta)
         m1_exp  = jnp.expand_dims(jnp.atleast_1d(m1), axis=-1)
-        p_grid  = self._eval_unnorm(m1_exp, Q_GRID, m_min, dm_min, theta)
-        n       = jnp.trapezoid(p_grid, Q_GRID, axis=-1).reshape(jnp.shape(m1))
+        q_grid  = get_q_grid()
+        p_grid  = self._eval_unnorm(m1_exp, q_grid, m_min, dm_min, theta)
+        n       = jnp.trapezoid(p_grid, q_grid, axis=-1).reshape(jnp.shape(m1))
         return p / jnp.where(n > 0, n, 1.0)
 
 
@@ -162,7 +164,8 @@ class SpinModel(ABC):
         Normalisation integral over CHI_GRID.
         Depends only on theta — call once per proposal, reuse across samples.
         """
-        return jnp.trapezoid(self._eval_unnorm(CHI_GRID, theta), CHI_GRID)
+        chi_grid = get_chi_grid()
+        return jnp.trapezoid(self._eval_unnorm(chi_grid, theta), chi_grid)
 
     def __call__(self, chieff, theta, norm=None):
         p = self._eval_unnorm(chieff, theta)
