@@ -33,6 +33,8 @@ from darksirens.em import get_redshift_prior
 from darksirens.em.completion import build_pixel_kde_cache
 from darksirens.inference.utils import log_sample_weight
 from darksirens.inference.events import pad_gw_event_to_multiple
+from darksirens.utils.cosmology import dL_in_z_grid
+from darksirens.utils.utils import logdiffexp
 from darksirens.inference.selection import compute_selection_term, selection_log_correction
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
@@ -101,6 +103,15 @@ def darksiren_log_likelihood(
     def log_prior_z(z, pix, catalog):
         return raw_logPriorUniv(z, pix, cosmo, survey, catalog)
 
+    def _log_sample_weight_if_supported(m1det, q, dL, chieff, pix, prior_wt, catalog):
+        """Return -inf for distances outside the tabulated z(dL) support."""
+        ldw = log_sample_weight(
+            m1det, q, dL, chieff, pix, prior_wt,
+            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
+        )
+        supported = dL_in_z_grid(dL, H0, Om0)
+        return jnp.where(supported & jnp.isfinite(ldw), ldw, -jnp.inf)
+
     def log_weight(m1det, q, dL, chieff, pix, prior_wt, catalog):
         """
         Selection weight in the canonical integration variables.
@@ -108,11 +119,11 @@ def darksiren_log_likelihood(
         The detected-injection ``GWEvent`` stores ``m1det`` and ``m2det`` for
         provenance, but the likelihood integrates over ``(m1det, q, dL)``
         with ``q = m2det / m1det``.  ``prior_wt`` must therefore be a
-        proposal density in that same basis.
+        proposal density in that same basis.  Out-of-grid distances are
+        rejected here as ``-inf`` before selection log-sum-exp aggregation.
         """
-        return log_sample_weight(
-            m1det, q, dL, chieff, pix, prior_wt,
-            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
+        return _log_sample_weight_if_supported(
+            m1det, q, dL, chieff, pix, prior_wt, catalog
         )
 
     def log_weight_ev(m1det, q, dL, chieff, pix, prior_wt, catalog):
@@ -122,10 +133,11 @@ def darksiren_log_likelihood(
         This intentionally calls the same helper as ``log_weight``.  If a PE
         file supplies a native ``(m1det, m2det, dL)`` density, it must be
         converted to the ``q`` basis before it reaches the likelihood.
+        Out-of-grid distances are rejected here as ``-inf`` before PE
+        log-sum-exp aggregation.
         """
-        return log_sample_weight(
-            m1det, q, dL, chieff, pix, prior_wt,
-            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
+        return _log_sample_weight_if_supported(
+            m1det, q, dL, chieff, pix, prior_wt, catalog
         )
 
     # ------------------------------------------------------------------
@@ -147,12 +159,14 @@ def darksiren_log_likelihood(
     def _pe_event_fn(_, event_idx):
         s  = event_idx * nsamp
         sl = lambda arr: lax.dynamic_slice_in_dim(arr, s, nsamp)
+        dL_ev = sl(gw_pe.dL)
+        valid = sl(gw_pe.valid) & (sl(gw_pe.prior_wt) > 0.0)
         ldw = log_weight_ev(
-            sl(gw_pe.m1det), sl(gw_pe.q), sl(gw_pe.dL),
+            sl(gw_pe.m1det), sl(gw_pe.q), dL_ev,
             sl(gw_pe.chieff), sl(gw_pe.pixels), sl(gw_pe.prior_wt),
             em_catalog_pe,
         )
-        ldw = jnp.where(jnp.isfinite(ldw), ldw, -jnp.inf)
+        ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
         return None, -jnp.log(nsamp) + logsumexp(ldw)
 
     _, event_lls = lax.scan(_pe_event_fn, None, jnp.arange(nEvents))
@@ -518,10 +532,12 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         gw_pe = GWEvent(
             m1det=m1det_pe, m2det=m2det_pe, dL=dL_pe,
             chieff=chieff_pe, prior_wt=p_pe, pixels=pixels_pe, q=q_pe,
+            valid=jnp.ones_like(dL_pe, dtype=bool),
         )
         gw_sel = GWEvent(
             m1det=m1det_sel, m2det=m2det_sel, dL=dL_sel,
             chieff=chieff_sel, prior_wt=p_draw, pixels=pixels_sel, q=q_sel,
+            valid=jnp.ones_like(dL_sel, dtype=bool),
         )
         if sel_batch_size is not None:
             gw_sel, _ = pad_gw_event_to_multiple(gw_sel, sel_batch_size)

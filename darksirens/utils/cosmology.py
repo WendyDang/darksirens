@@ -60,8 +60,25 @@ def dL_of_z(z,H0,Om0=Om0Planck):
     return (1+z)*r_of_z(z,H0,Om0)
 
 @jit
+def dL_grid_bounds(H0, Om0=Om0Planck):
+    """Return the luminosity-distance support covered by ``zgrid``."""
+    dL_grid = dL_of_z(zgrid, H0, Om0)
+    return dL_grid[0], dL_grid[-1]
+
+
+@jit
+def dL_in_z_grid(dL, H0, Om0=Om0Planck):
+    """Boolean mask for distances supported by the redshift interpolation grid."""
+    dL_min, dL_max = dL_grid_bounds(H0, Om0)
+    return (dL >= dL_min) & (dL <= dL_max)
+
+
+@jit
 def z_of_dL(dL,H0,Om0=Om0Planck):
-    return jnp.interp(dL,dL_of_z(zgrid,H0,Om0),zgrid)
+    dL_grid = dL_of_z(zgrid,H0,Om0)
+    in_grid = (dL >= dL_grid[0]) & (dL <= dL_grid[-1])
+    z = jnp.interp(dL,dL_grid,zgrid)
+    return jnp.where(in_grid, z, jnp.nan)
 
 @jit
 def dV_of_z(z,H0,Om0=Om0Planck):

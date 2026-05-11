@@ -107,6 +107,7 @@ class GWEvent(NamedTuple):
     prior_wt: Any   # PE prior weights evaluated at the samples
     pixels: Any     # HEALPix pixel indices corresponding to the sky location
     q: Any          # Mass ratio m2det/m1det — stored at construction, never recomputed
+    valid: Any      # Explicit structural mask; False for padded sentinel rows
 
     @property
     def chirp_mass(self):

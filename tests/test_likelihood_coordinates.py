@@ -163,3 +163,18 @@ def test_pe_and_selection_weights_are_invariant_under_equivalent_m2_q_proposals(
         np.asarray(selection_weights_q), np.asarray(selection_weights_m2), rtol=1e-12
     )
     np.testing.assert_allclose(np.asarray(pe_weights_q), np.asarray(selection_weights_q), rtol=1e-12)
+
+
+def test_z_of_dL_returns_nan_outside_interpolation_grid():
+    """Distances outside the tabulated dL(z) support must not clamp to z-grid edges."""
+    from darksirens.utils.cosmology import dL_grid_bounds
+
+    cosmo = CosmoParams(H0=67.74, Om0=0.3089)
+    dL_min, dL_max = dL_grid_bounds(cosmo.H0, cosmo.Om0)
+    dL = jnp.array([dL_min - 1.0, 500.0, dL_max + 1.0])
+
+    z = z_of_dL(dL, cosmo.H0, cosmo.Om0)
+
+    assert bool(jnp.isnan(z[0]))
+    assert bool(jnp.isfinite(z[1]))
+    assert bool(jnp.isnan(z[2]))

@@ -154,7 +154,7 @@ def compute_selection_term(
     gw_sel : GWEvent
         Injection samples (detected).  If ``sel_batch_size`` is set and the
         length is not divisible by the batch size, the event is padded with
-        explicit zero-prior-weight sentinel rows before scanning.
+        explicit invalid sentinel rows before scanning.
     em_catalog_sel : EMCatalog
         EM catalog sliced to the injection sky positions.
     log_weight_fn : callable(m1det, q, dL, chieff, pix, prior_wt, catalog) → array
@@ -168,16 +168,16 @@ def compute_selection_term(
     sel_batch_size : int or None
         If not None, process injections in chunks via ``lax.scan`` to
         limit peak GPU memory.  Non-divisible inputs are padded internally;
-        padded rows have ``prior_wt == 0`` and contribute zero weight.
+        padded rows have ``valid == False`` and contribute zero weight.
 
     Returns
     -------
     log_mu : scalar — log of the selection integral estimate
     Neff   : scalar — effective sample size
     """
-    def _batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b):
+    def _batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b, valid_b):
         ldw = log_weight_fn(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
-        valid = pwt_b > 0.0
+        valid = valid_b & (pwt_b > 0.0)
         ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
         return logsumexp(ldw), logsumexp(2.0 * ldw)
 
@@ -190,6 +190,7 @@ def compute_selection_term(
             gw_sel.chieff,
             gw_sel.pixels,
             gw_sel.prior_wt,
+            gw_sel.valid,
         )
     else:
         # --- Batched via lax.scan ---
@@ -208,6 +209,7 @@ def compute_selection_term(
                 sl(gw_sel.chieff),
                 sl(gw_sel.pixels),
                 sl(gw_sel.prior_wt),
+                sl(gw_sel.valid),
             )
             return None, (lse_b, lse2_b)
 

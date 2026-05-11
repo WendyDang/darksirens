@@ -55,6 +55,7 @@ def make_gw_event(
     chieff,
     prior_wt,
     pixels,
+    valid=None,
 ) -> GWEvent:
     """
     Construct a ``GWEvent`` with barrier-wrapped arrays and pre-computed ``q``.
@@ -71,6 +72,10 @@ def make_gw_event(
         PE prior weights (normalised per event).
     pixels : array-like of int
         HEALPix pixel indices.
+    valid : array-like of bool, optional
+        Explicit structural mask.  Defaults to all True; padding helpers set
+        padded entries to False so downstream log-sum-exp code can reject
+        them without relying on physical sentinel values.
 
     Returns
     -------
@@ -87,6 +92,9 @@ def make_gw_event(
     # Integer pixels: barrier still prevents constant-folding of the
     # ang2pix indexing chain, which can be large.
     pixels_b  = _barrier(jnp.asarray(pixels,   dtype=jnp.int32))
+    if valid is None:
+        valid = jnp.ones_like(dL_b, dtype=bool)
+    valid_b   = _barrier(jnp.asarray(valid, dtype=bool))
     q_b       = _barrier(m2det_b / m1det_b)
 
     return GWEvent(
@@ -97,6 +105,7 @@ def make_gw_event(
         prior_wt = prior_wt_b,
         pixels   = pixels_b,
         q        = q_b,
+        valid    = valid_b,
     )
 
 
@@ -111,20 +120,19 @@ def pad_gw_event_to_multiple(
     Used when ``sel_batch_size`` is set: ``lax.scan`` processes fixed-size
     chunks, so callers either need ceiling batches with a mask or an input
     length that divides evenly into batches.  This helper implements the
-    latter by appending sentinel injections whose ``prior_wt`` is exactly
-    zero.  Selection batching code treats ``prior_wt <= 0`` as a structural
-    mask and converts those entries to ``-inf`` log weight, so padded rows
-    contribute exactly zero to both first- and second-moment sums without
-    relying on any high-redshift/population heuristic.
+    latter by appending sentinel injections with ``valid == False``.
+    Selection batching code treats this explicit mask as structural and
+    converts those entries to ``-inf`` log weight, so padded rows contribute
+    exactly zero to both first- and second-moment sums without relying on any
+    high-distance/redshift/population heuristic.
 
     Parameters
     ----------
     event : GWEvent
     multiple : int
     fill_prior_wt : float
-        Fill value for ``prior_wt`` on padded entries.  Default 0.0; values
-        ``<= 0`` are interpreted as an explicit padding mask by selection
-        log-sum-exp routines.
+        Fill value for ``prior_wt`` on padded entries.  The explicit
+        ``valid`` mask, not this value, identifies padded rows.
 
     Returns
     -------
@@ -148,9 +156,10 @@ def pad_gw_event_to_multiple(
     padded = make_gw_event(
         m1det    = _pad1d(event.m1det,    fill=30.0),
         m2det    = _pad1d(event.m2det,    fill=30.0),
-        dL       = _pad1d(event.dL,       fill=1e5),
+        dL       = _pad1d(event.dL,       fill=event.dL[0]),
         chieff   = _pad1d(event.chieff,   fill=0.0),
         prior_wt = _pad1d(event.prior_wt, fill=fill_prior_wt),
         pixels   = _pad1d(event.pixels.astype(np.int32), fill=0),
+        valid    = _pad1d(event.valid,    fill=False),
     )
     return padded, pad
