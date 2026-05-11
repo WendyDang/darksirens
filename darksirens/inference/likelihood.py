@@ -33,7 +33,7 @@ from darksirens.em import get_redshift_prior
 from darksirens.em.completion import build_pixel_kde_cache
 from darksirens.inference.utils import log_sample_weight
 from darksirens.inference.events import pad_gw_event_to_multiple
-from darksirens.utils.utils import logdiffexp
+from darksirens.inference.selection import compute_selection_term, selection_log_correction
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
 from astropy.cosmology import Planck15
@@ -131,54 +131,15 @@ def darksiren_log_likelihood(
     # ------------------------------------------------------------------
     # Selection term
     # ------------------------------------------------------------------
-    def _sel_batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b):
-        ldw = log_weight(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
-        valid = pwt_b > 0.0
-        ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
-        return logsumexp(ldw), logsumexp(2.0 * ldw)
-
-    if sel_batch_size is None:
-        lse, lse2 = _sel_batch_lse(
-            gw_sel.dL, gw_sel.m1det, gw_sel.q,
-            gw_sel.chieff, gw_sel.pixels, gw_sel.prior_wt,
-        )
-        log_mu = lse  - jnp.log(Ndraw)
-        log_s2 = lse2 - 2.0 * jnp.log(Ndraw)
-    else:
-        N_sel = gw_sel.dL.shape[0]
-        if N_sel % sel_batch_size != 0:
-            raise ValueError(
-                "gw_sel length must be divisible by sel_batch_size; "
-                "pad with pad_gw_event_to_multiple before calling "
-                "darksiren_log_likelihood"
-            )
-        N_batches = N_sel // sel_batch_size
-
-        def _scan_fn(_, batch_idx):
-            start = batch_idx * sel_batch_size
-            sl = lambda arr: lax.dynamic_slice_in_dim(arr, start, sel_batch_size)
-            lse_b, lse2_b = _sel_batch_lse(
-                sl(gw_sel.dL), sl(gw_sel.m1det), sl(gw_sel.q),
-                sl(gw_sel.chieff), sl(gw_sel.pixels), sl(gw_sel.prior_wt),
-            )
-            return None, (lse_b, lse2_b)
-
-        _, (lse_all, lse2_all) = lax.scan(_scan_fn, None, jnp.arange(N_batches))
-        log_mu = logsumexp(lse_all)  - jnp.log(Ndraw)
-        log_s2 = logsumexp(lse2_all) - 2.0 * jnp.log(Ndraw)
-
-    # Effective sample size (Farr 2019).
-    # Guard: when all selection weights are -inf, log_mu = log_s2 = -inf.
-    # The subtraction 2*(-inf) - (-inf) = nan without the guard.
-    log_sigma2 = logdiffexp(log_s2, 2.0 * log_mu - jnp.log(Ndraw))
-    Neff = jnp.where(
-        jnp.isfinite(log_mu),
-        jnp.exp(2.0 * log_mu - log_sigma2),
-        0.0,                              # → too_sparse=True → ll=-inf below
+    log_mu, Neff = compute_selection_term(
+        gw_sel,
+        em_catalog_sel,
+        log_weight,
+        Ndraw,
+        nEvents,
+        sel_batch_size=sel_batch_size,
     )
-
-    ll  = jnp.where(Neff <= 5 * nEvents, -jnp.inf, 0.0)
-    ll += -nEvents * log_mu + nEvents * (3 + nEvents) / (2.0 * Neff)
+    ll = selection_log_correction(log_mu, Neff, nEvents)
 
     # ------------------------------------------------------------------
     # PE term: scan over events
