@@ -136,3 +136,70 @@ def test_load_all_data_returns_named_pe_counts_for_survey_fixture(
     assert loaded["ngals_sel"].shape[0] == loaded["unique_pixels_sel"].shape[0]
     assert loaded["sample_to_unique_pe"].shape[0] == loaded["pixels_pe"].shape[0]
     assert loaded["sample_to_unique_sel"].shape[0] == loaded["pixels_sel"].shape[0]
+
+
+def test_load_all_data_stores_bright_siren_counterpart_pixel_and_keeps_it_compact(monkeypatch):
+    nside = 2
+    counterpart_pixel = 7
+    non_counterpart_pixel = 8
+    cp_ra, cp_dec = _angles_for_pixels(nside, np.array([counterpart_pixel], dtype=np.int32))
+    pe_ra, pe_dec = _angles_for_pixels(
+        nside, np.array([counterpart_pixel, non_counterpart_pixel], dtype=np.int32)
+    )
+    sel_ra, sel_dec = _angles_for_pixels(
+        nside, np.array([non_counterpart_pixel], dtype=np.int32)
+    )
+
+    def fake_load_gw_samples(_path):
+        return (
+            np.array([36.0, 38.0]),
+            np.array([28.8, 30.4]),
+            np.array([460.0, 500.0]),
+            np.array([0.0, 0.02]),
+            pe_ra,
+            pe_dec,
+            np.ones(2),
+            1,
+            2,
+        )
+
+    def fake_load_selection_samples(_path):
+        return (
+            np.array([34.0]),
+            np.array([27.2]),
+            np.array([430.0]),
+            np.zeros(1),
+            sel_ra,
+            sel_dec,
+            np.ones(1),
+            1,
+        )
+
+    monkeypatch.setattr(data_module, "load_gw_samples", fake_load_gw_samples)
+    monkeypatch.setattr(
+        data_module, "load_selection_samples", fake_load_selection_samples
+    )
+
+    opts = SimpleNamespace(
+        universe_model="bright_sirens",
+        survey_path=None,
+        sigma_kernel=0.0,
+        gw_path="unused-gw.hdf5",
+        gwselection_path="unused-selection.hdf5",
+        use_LSS=False,
+        counterpart=(float(cp_ra[0]), float(cp_dec[0]), 0.2),
+        counterpart_nside=nside,
+        counterpart_dz=0.01,
+        bright_siren_sky_marginalized=False,
+    )
+
+    loaded = data_module.load_all_data(opts)
+
+    assert loaded["counterpart_pixel"] == counterpart_pixel
+    assert loaded["bright_siren_sky_marginalized"] is False
+    assert loaded["nside"] == nside
+    np.testing.assert_array_equal(
+        loaded["pixels_pe"], np.array([counterpart_pixel, non_counterpart_pixel])
+    )
+    assert counterpart_pixel in set(loaded["unique_pixels_pe"].tolist())
+    assert counterpart_pixel in set(loaded["unique_pixels_sel"].tolist())

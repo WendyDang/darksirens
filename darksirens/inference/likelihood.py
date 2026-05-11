@@ -53,13 +53,14 @@ def _complete_empty_pixel_policy_code(policy: str | int) -> int:
     return int(policy)
 
 
-def _unique_inference_pixels(pixels_pe, pixels_sel) -> np.ndarray:
+def _unique_inference_pixels(pixels_pe, pixels_sel, required_pixels=None) -> np.ndarray:
     """Return the sorted union of unique PE and selection HEALPix pixels."""
     unique_pe = np.unique(np.asarray(pixels_pe, dtype=np.int32))
     unique_sel = np.unique(np.asarray(pixels_sel, dtype=np.int32))
-    return np.unique(np.concatenate([unique_pe, unique_sel])).astype(
-        np.int32, copy=False
-    )
+    parts = [unique_pe, unique_sel]
+    if required_pixels is not None:
+        parts.append(np.asarray(required_pixels, dtype=np.int32).reshape(-1))
+    return np.unique(np.concatenate(parts)).astype(np.int32, copy=False)
 
 
 # ============================================================
@@ -228,6 +229,13 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     complete_empty_pixel_policy = _complete_empty_pixel_policy_code(
         getattr(opts, "complete_empty_pixel_policy", "zero")
     )
+    counterpart_pixel = data.get("counterpart_pixel")
+    bright_siren_sky_marginalized = bool(
+        data.get(
+            "bright_siren_sky_marginalized",
+            getattr(opts, "bright_siren_sky_marginalized", False),
+        )
+    )
 
     def _to_jax(key):
         val = data.get(key)
@@ -324,7 +332,14 @@ def make_likelihood(opts, data: dict, pop_params_fid,
             data.get("pixels_pe"), data.get("pixels_sel"),
         )
     ):
-        union_unique_pixels = _unique_inference_pixels(data["pixels_pe"], data["pixels_sel"])
+        required_pixels = (
+            [counterpart_pixel]
+            if universe_model == "bright_sirens" and counterpart_pixel is not None
+            else None
+        )
+        union_unique_pixels = _unique_inference_pixels(
+            data["pixels_pe"], data["pixels_sel"], required_pixels=required_pixels
+        )
         pe_global_pixels = np.asarray(data["pixels_pe"], dtype=np.int32)
         sel_global_pixels = np.asarray(data["pixels_sel"], dtype=np.int32)
         sample_to_union_pe_raw = np.searchsorted(
@@ -526,6 +541,8 @@ def make_likelihood(opts, data: dict, pop_params_fid,
             delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel,
             dN_obs_kde=dN_obs_kde_pe, pixel_to_cache_idx=pixel_to_cache_idx_pe,
             unique_pixels=unique_pixels_pe, sample_to_unique_idx=sample_to_unique_pe,
+            counterpart_pixel=counterpart_pixel,
+            bright_siren_sky_marginalized=bright_siren_sky_marginalized,
         )
         em_catalog_sel = EMCatalog(
             apix=apix, zgals=zgals_sel_catalog, dzgals=dzgals_sel_catalog,
@@ -533,6 +550,8 @@ def make_likelihood(opts, data: dict, pop_params_fid,
             delta_g_pix_z=delta_g_pix_z, sigma_kernel=sigma_kernel,
             dN_obs_kde=dN_obs_kde_sel, pixel_to_cache_idx=pixel_to_cache_idx_sel,
             unique_pixels=unique_pixels_sel, sample_to_unique_idx=sample_to_unique_sel,
+            counterpart_pixel=counterpart_pixel,
+            bright_siren_sky_marginalized=bright_siren_sky_marginalized,
         )
 
         gw_pe = GWEvent(

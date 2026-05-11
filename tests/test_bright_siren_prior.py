@@ -1,0 +1,74 @@
+import jax
+jax.config.update("jax_enable_x64", True)
+
+import healpy as hp
+import jax.numpy as jnp
+import numpy as np
+
+from darksirens.em.prior import PRIOR_REGISTRY, _log_prior_bright_sirens
+from darksirens.utils.containers import CosmoParams, EMCatalog, SurveyParams
+
+
+def _cosmo():
+    return CosmoParams(H0=67.74, Om0=0.3075)
+
+
+def _survey():
+    return SurveyParams(
+        n0=1.0,
+        z50=1.0,
+        w=0.5,
+        delta=0.0,
+        b_miss=1.0,
+        alpha_miss=0.5,
+        complete_empty_pixel_policy=0,
+    )
+
+
+def _catalog(counterpart_nside=2, sky_marginalized=False):
+    counterpart_pixel = 7
+    non_counterpart_pixel = 8
+    unique_pixels = jnp.array([counterpart_pixel, non_counterpart_pixel], dtype=jnp.int32)
+    return EMCatalog(
+        apix=hp.nside2pixarea(counterpart_nside),
+        zgals=jnp.array([[0.2], [0.0]]),
+        dzgals=jnp.array([[0.01], [1.0]]),
+        wgals=jnp.array([[1.0], [0.0]]),
+        ngals=jnp.array([1, 0], dtype=jnp.int32),
+        delta_g_pix_z=jnp.zeros((1, 1)),
+        sigma_kernel=0.0,
+        dN_obs_kde=None,
+        pixel_to_cache_idx=None,
+        unique_pixels=unique_pixels,
+        counterpart_pixel=counterpart_pixel,
+        bright_siren_sky_marginalized=sky_marginalized,
+    )
+
+
+def test_bright_siren_prior_only_finite_in_counterpart_pixel_with_nside_gt_one():
+    z = jnp.array([0.2, 0.2])
+    # Compact row ids for GW samples in the matching and non-matching pixels.
+    pix = jnp.array([0, 1], dtype=jnp.int32)
+
+    actual = _log_prior_bright_sirens(z, pix, _cosmo(), _survey(), _catalog())
+
+    actual_np = np.asarray(actual)
+    assert np.isfinite(actual_np[0])
+    assert np.isneginf(actual_np[1])
+
+
+def test_bright_siren_sky_marginalized_mode_uses_counterpart_redshift_for_all_pixels():
+    z = jnp.array([0.2, 0.2])
+    pix = jnp.array([0, 1], dtype=jnp.int32)
+
+    actual = _log_prior_bright_sirens(
+        z, pix, _cosmo(), _survey(), _catalog(sky_marginalized=True)
+    )
+
+    actual_np = np.asarray(actual)
+    assert np.all(np.isfinite(actual_np))
+    np.testing.assert_allclose(actual_np[0], actual_np[1], rtol=1e-12)
+
+
+def test_prior_registry_uses_dedicated_bright_siren_prior():
+    assert PRIOR_REGISTRY["bright_sirens"] is _log_prior_bright_sirens

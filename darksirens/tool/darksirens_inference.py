@@ -278,6 +278,7 @@ def save_results_hdf5(
             f.attrs["counterpart_z"] = float(opts.counterpart[2])
             f.attrs["counterpart_dz"] = float(opts.counterpart_dz)
             f.attrs["counterpart_nside"] = int(opts.counterpart_nside)
+            f.attrs["bright_siren_sky_marginalized"] = bool(opts.bright_siren_sky_marginalized)
         f.attrs["sigma_kernel"]    = float(opts.sigma_kernel)
         f.attrs["nlive"]           = int(opts.nlive)
         f.attrs["dlogz"]           = float(opts.dlogz)
@@ -392,6 +393,9 @@ def main():
                    help="Gaussian redshift uncertainty for --counterpart.")
     g.add_argument("--counterpart_nside", type=int, default=1,
                    help="HEALPix NSIDE for the synthetic bright-siren counterpart catalog.")
+    g.add_argument("--bright_siren_sky_marginalized", type=str_to_bool, default=False, metavar="BOOL",
+                   help=("For bright_sirens, ignore the counterpart sky-pixel gate and "
+                         "apply only the counterpart redshift prior."))
     g.add_argument("--complete_empty_pixel_policy", default="zero",
                    choices=["zero", "volume"],
                    help=("Policy for genuinely empty pixels in complete-catalog models: "
@@ -461,6 +465,7 @@ def main():
         _row("Counterpart", f"ra={ra_cp:.8g}, dec={dec_cp:.8g}, z={z_cp:.8g}")
         _row("Counterpart dz", opts.counterpart_dz)
         _row("Counterpart nside", opts.counterpart_nside)
+        _row("Bright-siren sky marginalized", opts.bright_siren_sky_marginalized)
     _row("Population model", opts.pop_model)
     if opts.universe_model in {"dark_sirens_complete", "bright_sirens"}:
         _row("Empty-pixel policy", opts.complete_empty_pixel_policy)
