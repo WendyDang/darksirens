@@ -1,5 +1,4 @@
 import numpy as np
-import jax.numpy as jnp
 from darksirens.gw.populations import pop_model_prior_parser
 from darksirens.utils.cosmology import Om0Planck
 
@@ -82,9 +81,15 @@ def build_parameter_space(
     pop_lower, pop_upper, pop_labels, model_name = pop_model_prior_parser(pop_model)
 
     # --- Survey ---
+    # ``log10n0`` is log10 of the comoving galaxy density in Mpc^-3,
+    # matching dV_of_z [Mpc^3 sr^-1 dz^-1] times the HEALPix pixel area.
+    # The redshift grid used by the completion model spans 0 <= z <= 5;
+    # these defaults keep the survey rolloff inside that domain while avoiding
+    # the formerly ultra-broad density/evolution fits that could force heavy
+    # clipping throughout the completion grid.
     survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha_miss"]
-    survey_lower = [-10.0, 0.0, 0.01, -10.0, 0.0, 0.0]
-    survey_upper = [10.0, 5.0, 5.0, 10.0, 5.0, 1.0]
+    survey_lower = [-4.0, 0.05, 0.02, -3.0, 0.0, 0.0]
+    survey_upper = [-1.0, 4.5, 1.5, 3.0, 3.0, 1.0]
 
     # Make sure all prior override keys are valid parameter labels
     known_labels = set(cosmo_labels) | set(pop_labels) | set(survey_labels)
