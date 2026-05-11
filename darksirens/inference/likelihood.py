@@ -102,6 +102,15 @@ def darksiren_log_likelihood(
     def log_prior_z(z, pix, catalog):
         return raw_logPriorUniv(z, pix, cosmo, survey, catalog)
 
+    def _log_sample_weight_if_supported(m1det, q, dL, chieff, pix, prior_wt, catalog):
+        """Return -inf for distances outside the tabulated z(dL) support."""
+        ldw = log_sample_weight(
+            m1det, q, dL, chieff, pix, prior_wt,
+            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
+        )
+        supported = dL_in_z_grid(dL, H0, Om0)
+        return jnp.where(supported & jnp.isfinite(ldw), ldw, -jnp.inf)
+
     def log_weight(m1det, q, dL, chieff, pix, prior_wt, catalog):
         """
         Selection weight in the canonical integration variables.
@@ -109,11 +118,11 @@ def darksiren_log_likelihood(
         The detected-injection ``GWEvent`` stores ``m1det`` and ``m2det`` for
         provenance, but the likelihood integrates over ``(m1det, q, dL)``
         with ``q = m2det / m1det``.  ``prior_wt`` must therefore be a
-        proposal density in that same basis.
+        proposal density in that same basis.  Out-of-grid distances are
+        rejected here as ``-inf`` before selection log-sum-exp aggregation.
         """
-        return log_sample_weight(
-            m1det, q, dL, chieff, pix, prior_wt,
-            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
+        return _log_sample_weight_if_supported(
+            m1det, q, dL, chieff, pix, prior_wt, catalog
         )
 
     def log_weight_ev(m1det, q, dL, chieff, pix, prior_wt, catalog):
@@ -123,18 +132,18 @@ def darksiren_log_likelihood(
         This intentionally calls the same helper as ``log_weight``.  If a PE
         file supplies a native ``(m1det, m2det, dL)`` density, it must be
         converted to the ``q`` basis before it reaches the likelihood.
+        Out-of-grid distances are rejected here as ``-inf`` before PE
+        log-sum-exp aggregation.
         """
-        return log_sample_weight(
-            m1det, q, dL, chieff, pix, prior_wt,
-            cosmo, survey, pop_params, catalog, log_p_pop, log_prior_z,
+        return _log_sample_weight_if_supported(
+            m1det, q, dL, chieff, pix, prior_wt, catalog
         )
 
     # ------------------------------------------------------------------
     # Selection term
     # ------------------------------------------------------------------
     def _sel_batch_lse(dL_b, m1det_b, q_b, chi_b, pix_b, pwt_b, valid_b):
-        in_dL_grid = dL_in_z_grid(dL_b, H0, Om0)
-        valid = valid_b & (pwt_b > 0.0) & in_dL_grid
+        valid = valid_b & (pwt_b > 0.0)
         ldw = log_weight(m1det_b, q_b, dL_b, chi_b, pix_b, pwt_b, em_catalog_sel)
         ldw = jnp.where(valid & jnp.isfinite(ldw), ldw, -jnp.inf)
         return logsumexp(ldw), logsumexp(2.0 * ldw)
@@ -190,11 +199,7 @@ def darksiren_log_likelihood(
         s  = event_idx * nsamp
         sl = lambda arr: lax.dynamic_slice_in_dim(arr, s, nsamp)
         dL_ev = sl(gw_pe.dL)
-        valid = (
-            sl(gw_pe.valid)
-            & (sl(gw_pe.prior_wt) > 0.0)
-            & dL_in_z_grid(dL_ev, H0, Om0)
-        )
+        valid = sl(gw_pe.valid) & (sl(gw_pe.prior_wt) > 0.0)
         ldw = log_weight_ev(
             sl(gw_pe.m1det), sl(gw_pe.q), dL_ev,
             sl(gw_pe.chieff), sl(gw_pe.pixels), sl(gw_pe.prior_wt),
