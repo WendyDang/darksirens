@@ -9,3 +9,5 @@ jaxns
 h5py
 astropy
 tqdm
+dynesty
+seaborn
