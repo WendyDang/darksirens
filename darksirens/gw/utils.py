@@ -1,3 +1,18 @@
+import importlib
+import importlib.util
+import multiprocessing as mp
+import os
+import sys
+
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+
+try:
+    mp.set_start_method("spawn")
+except RuntimeError:
+    # Respect the start method if the embedding application already selected one.
+    pass
+
 import jax
 
 from jax import random, jit, vmap, grad
@@ -16,22 +31,64 @@ import astropy.constants as constants
 from jax.scipy.special import logsumexp
 from scipy.interpolate import interp1d
 from scipy.stats import gaussian_kde
-from tqdm import tqdm
+_TQDM_MODULE = sys.modules.get("tqdm")
+if _TQDM_MODULE is not None and hasattr(_TQDM_MODULE, "tqdm"):
+    tqdm = _TQDM_MODULE.tqdm
+elif importlib.util.find_spec("tqdm") is not None:
+    tqdm = importlib.import_module("tqdm").tqdm
+else:
+    def tqdm(iterable=None, *args, **kwargs):
+        if iterable is None:
+            class _NoOpProgress:
+                def update(self, *_args, **_kwargs):
+                    return None
+
+                def close(self):
+                    return None
+
+                def set_postfix(self, *_args, **_kwargs):
+                    return None
+
+            return _NoOpProgress()
+        return iterable
 
 from argparse import ArgumentParser
 import glob
 
 from darksirens.utils.cosmology import *
 
-from gwdistributions.distributions.spin import IsotropicUniformMagnitudeChiEffGivenComponentMass
+_GWDIST_SPIN_MODULE = sys.modules.get("gwdistributions.distributions.spin")
+if (
+    _GWDIST_SPIN_MODULE is not None
+    and hasattr(_GWDIST_SPIN_MODULE, "IsotropicUniformMagnitudeChiEffGivenComponentMass")
+):
+    IsotropicUniformMagnitudeChiEffGivenComponentMass = (
+        _GWDIST_SPIN_MODULE.IsotropicUniformMagnitudeChiEffGivenComponentMass
+    )
+else:
+    _GWDIST_ROOT_SPEC = importlib.util.find_spec("gwdistributions")
+    _GWDIST_SPEC = (
+        importlib.util.find_spec("gwdistributions.distributions.spin")
+        if _GWDIST_ROOT_SPEC is not None
+        else None
+    )
+    if _GWDIST_SPEC is not None:
+        IsotropicUniformMagnitudeChiEffGivenComponentMass = importlib.import_module(
+            "gwdistributions.distributions.spin"
+        ).IsotropicUniformMagnitudeChiEffGivenComponentMass
+    else:
+        IsotropicUniformMagnitudeChiEffGivenComponentMass = None
 
 import warnings
 warnings.filterwarnings("ignore", message="invalid value encountered in log")
 warnings.filterwarnings("ignore", message="invalid value encountered in arctanh")
 warnings.filterwarnings("ignore", message="divide by zero encountered in log")
 
-spin_prior = IsotropicUniformMagnitudeChiEffGivenComponentMass()
-spin_prior._init_values(max_spin_magnitude=0.99)
+if IsotropicUniformMagnitudeChiEffGivenComponentMass is not None:
+    spin_prior = IsotropicUniformMagnitudeChiEffGivenComponentMass()
+    spin_prior._init_values(max_spin_magnitude=0.99)
+else:
+    spin_prior = None
 
 def load_gw_samples(gw_path):
     """
@@ -97,6 +154,10 @@ def load_gw_samples(gw_path):
     if is_mock:
         print("This is using mock data.")
     else:
+        if spin_prior is None:
+            raise ModuleNotFoundError(
+                "gwdistributions is required to load non-mock GW samples with chi_eff priors."
+            )
         p_pe_chieff = np.exp(spin_prior._logprob(chieff, m1source, m2source, 0.99))
         p_pe = p_pe * p_pe_chieff
 
