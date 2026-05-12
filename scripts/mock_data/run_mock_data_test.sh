@@ -1,19 +1,40 @@
 #!/usr/bin/env bash
-# Generate a small mock dark-sirens data set and verify it can be ingested by
-# darksirens_inference's data loaders. Set RUN_INFERENCE=1 to also launch a
-# tiny sampler smoke run.
+# Generate a realistic low-redshift mock dark-sirens data set and verify that
+# the inference data loaders can ingest it. Set RUN_INFERENCE=1 to launch a
+# small dark-sirens sampler run using survey hyperparameters matched to the
+# generated catalog.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUTDIR="${OUTDIR:-${ROOT_DIR}/data/mock_dark_sirens_test}"
+SEED="${SEED:-1234}"
+
+# Survey-generation defaults.  N0=1e-3 Mpc^-3 is intentionally inside the
+# default inference prior log10n0 ∈ [-4, -1].  The low zmax keeps the fixture
+# lightweight while still using a physically meaningful density normalization.
+N0="${N0:-1e-3}"
+ZMAX="${ZMAX:-0.08}"
+SURVEY_Z50="${SURVEY_Z50:-0.75}"
+SURVEY_WIDTH="${SURVEY_WIDTH:-0.12}"
+GALAXY_DENSITY_DELTA="${GALAXY_DENSITY_DELTA:-0.0}"
+LOG10N0="$(python -c 'import math, sys; print(math.log10(float(sys.argv[1])))' "${N0}")"
+
+# Mock size/performance knobs.
 NSIDE="${NSIDE:-8}"
-N0="${N0:-3.177031162948949e-8}"
 NOBS="${NOBS:-3}"
 NSAMP="${NSAMP:-128}"
 NDRAW="${NDRAW:-50000}"
-SEED="${SEED:-1234}"
-SELECTION_BATCH_SIZE="${SELECTION_BATCH_SIZE:-1000}"
+SELECTION_BATCH_SIZE="${SELECTION_BATCH_SIZE:-50000}"
 SELECTION_PER_OBSERVATION_FACTOR="${SELECTION_PER_OBSERVATION_FACTOR:-6}"
+
+# Fractional/absolute widths used to generate mock GW PE samples.
+DL_FRAC_UNCERTAINTY="${DL_FRAC_UNCERTAINTY:-0.20}"
+M1DET_FRAC_UNCERTAINTY="${M1DET_FRAC_UNCERTAINTY:-0.08}"
+M2DET_FRAC_UNCERTAINTY="${M2DET_FRAC_UNCERTAINTY:-0.10}"
+CHIEFF_UNCERTAINTY="${CHIEFF_UNCERTAINTY:-0.08}"
+SKY_UNCERTAINTY_DEG="${SKY_UNCERTAINTY_DEG:-5.0}"
+
+FIXED_SURVEY_JSON="${FIXED_SURVEY_JSON:-{\"log10n0\": ${LOG10N0}, \"z50\": ${SURVEY_Z50}, \"w\": ${SURVEY_WIDTH}, \"delta\": ${GALAXY_DENSITY_DELTA}, \"b_miss\": 1.0, \"alpha_miss\": 0.5}}"
 
 cd "${ROOT_DIR}"
 mkdir -p "${OUTDIR}"
@@ -22,11 +43,20 @@ python scripts/mock_data/generate_mock_data.py \
   --outdir "${OUTDIR}" \
   --seed "${SEED}" \
   --n0 "${N0}" \
+  --zmax "${ZMAX}" \
+  --survey-z50 "${SURVEY_Z50}" \
+  --survey-width "${SURVEY_WIDTH}" \
+  --galaxy-density-delta "${GALAXY_DENSITY_DELTA}" \
   --nobs "${NOBS}" \
   --nsamp "${NSAMP}" \
   --ndraw "${NDRAW}" \
   --selection-batch-size "${SELECTION_BATCH_SIZE}" \
   --selection-per-observation-factor "${SELECTION_PER_OBSERVATION_FACTOR}" \
+  --dL-fractional-uncertainty "${DL_FRAC_UNCERTAINTY}" \
+  --m1det-fractional-uncertainty "${M1DET_FRAC_UNCERTAINTY}" \
+  --m2det-fractional-uncertainty "${M2DET_FRAC_UNCERTAINTY}" \
+  --chieff-uncertainty "${CHIEFF_UNCERTAINTY}" \
+  --sky-uncertainty-deg "${SKY_UNCERTAINTY_DEG}" \
   --nside "${NSIDE}"
 
 export OUTDIR NSIDE NOBS NSAMP
@@ -71,9 +101,10 @@ if [[ "${RUN_INFERENCE:-0}" == "1" ]]; then
     --universe_model dark_sirens \
     --fix_population True \
     --fix_survey True \
-    --nlive 50 \
-    --dlogz 5.0 \
-    --max_samples 500 \
+    --fixed_parameter_values "${FIXED_SURVEY_JSON}" \
+    --nlive 100 \
+    --dlogz 1.0 \
+    --max_samples 2000 \
     --seed "${SEED}" \
     --show_progress False \
     --save_path "${OUTDIR}/inference_smoke"
@@ -82,5 +113,6 @@ fi
 cat <<EOF
 Mock data test complete.
 Products are in: ${OUTDIR}
-Set RUN_INFERENCE=1 to run the optional tiny darksirens_inference sampler smoke test.
+Generated survey density N0=${N0} Mpc^-3 and zmax=${ZMAX}; fixed inference survey JSON: ${FIXED_SURVEY_JSON}
+Set RUN_INFERENCE=1 to run the optional darksirens_inference sampler smoke test.
 EOF
