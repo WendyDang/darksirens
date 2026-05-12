@@ -20,6 +20,18 @@ def barrier(arr: jnp.ndarray) -> jnp.ndarray:
 
 
 @dataclass(frozen=True)
+class CompactCatalogView:
+    """Caller-independent compact catalog arrays for one sample view."""
+
+    unique_pixels: np.ndarray | None
+    sample_to_unique: np.ndarray | None
+    zgals: np.ndarray
+    dzgals: np.ndarray | None
+    wgals: np.ndarray | None
+    ngals: np.ndarray | None
+
+
+@dataclass(frozen=True)
 class CatalogViews:
     """Barrier-wrapped PE/selection catalog views captured by the closure."""
 
@@ -48,10 +60,6 @@ def _to_jax(data: dict, key: str) -> jnp.ndarray:
     return jnp.asarray(val) if val is not None else jnp.array([0.0])
 
 
-def _catalog_key(data: dict, compact_key: str, full_key: str) -> str:
-    return compact_key if data.get(compact_key) is not None else full_key
-
-
 def unique_inference_pixels(pixels_pe, pixels_sel, required_pixels=None) -> np.ndarray:
     """Return the sorted union of unique PE and selection HEALPix pixels."""
     unique_pe = np.unique(np.asarray(pixels_pe, dtype=np.int32))
@@ -63,32 +71,66 @@ def unique_inference_pixels(pixels_pe, pixels_sel, required_pixels=None) -> np.n
 
 
 def _full_catalog_arrays(data: dict):
-    full_z = data.get("zgals_catalog") if data.get("zgals_catalog") is not None else data.get("zgals")
-    full_dz = data.get("dzgals_catalog") if data.get("dzgals_catalog") is not None else data.get("dzgals")
-    full_w = data.get("wgals_catalog") if data.get("wgals_catalog") is not None else data.get("wgals")
+    full_z = (
+        data.get("zgals_catalog")
+        if data.get("zgals_catalog") is not None
+        else data.get("zgals")
+    )
+    full_dz = (
+        data.get("dzgals_catalog")
+        if data.get("dzgals_catalog") is not None
+        else data.get("dzgals")
+    )
+    full_w = (
+        data.get("wgals_catalog")
+        if data.get("wgals_catalog") is not None
+        else data.get("wgals")
+    )
     full_n = data.get("ngals_catalog")
     return full_z, full_dz, full_w, full_n
 
 
-def _ensure_compact(data: dict, prefix: str, pixels_key: str) -> bool:
-    """Synthesize compact views for callers that still provide only full arrays."""
-    if data.get(f"zgals_{prefix}") is not None:
-        return True
+def _compact_view_from_data(data: dict, prefix: str) -> CompactCatalogView | None:
+    """Return a caller-provided compact view, if present."""
+    zgals = data.get(f"zgals_{prefix}")
+    if zgals is None:
+        return None
+
+    return CompactCatalogView(
+        unique_pixels=data.get(f"unique_pixels_{prefix}"),
+        sample_to_unique=data.get(f"sample_to_unique_{prefix}"),
+        zgals=zgals,
+        dzgals=data.get(f"dzgals_{prefix}"),
+        wgals=data.get(f"wgals_{prefix}"),
+        ngals=data.get("ngals_pe" if prefix == "pe" else "ngals_sel"),
+    )
+
+
+def _ensure_compact(
+    data: dict, prefix: str, pixels_key: str
+) -> CompactCatalogView | None:
+    """Return a compact view without mutating the caller-owned data dictionary."""
+    caller_view = _compact_view_from_data(data, prefix)
+    if caller_view is not None:
+        return caller_view
+
     full_z, full_dz, full_w, full_n = _full_catalog_arrays(data)
     pixels = data.get(pixels_key)
     if any(value is None for value in (full_z, full_dz, full_w, full_n, pixels)):
-        return False
+        return None
+
     unique_pixels, sample_to_unique_idx = np.unique(
         np.asarray(pixels, dtype=np.int32), return_inverse=True
     )
     unique_pixels = unique_pixels.astype(np.int32, copy=False)
-    data[f"unique_pixels_{prefix}"] = unique_pixels
-    data[f"sample_to_unique_{prefix}"] = sample_to_unique_idx.astype(np.int32, copy=False)
-    data[f"zgals_{prefix}"] = full_z[unique_pixels]
-    data[f"dzgals_{prefix}"] = full_dz[unique_pixels]
-    data[f"wgals_{prefix}"] = full_w[unique_pixels]
-    data["ngals_pe" if prefix == "pe" else "ngals_sel"] = full_n[unique_pixels]
-    return True
+    return CompactCatalogView(
+        unique_pixels=unique_pixels,
+        sample_to_unique=sample_to_unique_idx.astype(np.int32, copy=False),
+        zgals=full_z[unique_pixels],
+        dzgals=full_dz[unique_pixels],
+        wgals=full_w[unique_pixels],
+        ngals=full_n[unique_pixels],
+    )
 
 
 def prepare_catalog_views(
@@ -99,34 +141,50 @@ def prepare_catalog_views(
     cache_builder=build_pixel_kde_cache,
 ) -> CatalogViews:
     """Compact catalogs, build sample-to-unique maps, and prebuild KDE caches."""
-    pe_uses_compact = data.get("zgals_pe") is not None
-    sel_uses_compact = data.get("zgals_sel") is not None
+    pe_view = _ensure_compact(data, "pe", "pixels_pe")
+    sel_view = _ensure_compact(data, "sel", "pixels_sel")
 
-    pe_uses_compact = pe_uses_compact or _ensure_compact(data, "pe", "pixels_pe")
-    sel_uses_compact = sel_uses_compact or _ensure_compact(data, "sel", "pixels_sel")
+    full_z, full_dz, full_w, full_n = _full_catalog_arrays(data)
 
-    zgals_pe_catalog = barrier(_to_jax(data, _catalog_key(data, "zgals_pe", "zgals_catalog")))
-    dzgals_pe_catalog = barrier(_to_jax(data, _catalog_key(data, "dzgals_pe", "dzgals_catalog")))
-    wgals_pe_catalog = barrier(_to_jax(data, _catalog_key(data, "wgals_pe", "wgals_catalog")))
-    ngals_pe_raw = data.get("ngals_pe") if pe_uses_compact else data.get("ngals_catalog")
+    def _full_or_default(full_value):
+        return jnp.asarray(full_value) if full_value is not None else jnp.array([0.0])
+
+    zgals_pe_catalog = barrier(
+        jnp.asarray(pe_view.zgals) if pe_view is not None else _full_or_default(full_z)
+    )
+    dzgals_pe_catalog = barrier(
+        _full_or_default(pe_view.dzgals if pe_view is not None else full_dz)
+    )
+    wgals_pe_catalog = barrier(
+        _full_or_default(pe_view.wgals if pe_view is not None else full_w)
+    )
+    ngals_pe_raw = pe_view.ngals if pe_view is not None else full_n
     ngals_pe_catalog = (
         barrier(jnp.asarray(ngals_pe_raw, dtype=jnp.int32))
         if ngals_pe_raw is not None
         else None
     )
 
-    zgals_sel_catalog = barrier(_to_jax(data, _catalog_key(data, "zgals_sel", "zgals_catalog")))
-    dzgals_sel_catalog = barrier(_to_jax(data, _catalog_key(data, "dzgals_sel", "dzgals_catalog")))
-    wgals_sel_catalog = barrier(_to_jax(data, _catalog_key(data, "wgals_sel", "wgals_catalog")))
-    ngals_sel_raw = data.get("ngals_sel") if sel_uses_compact else data.get("ngals_catalog")
+    zgals_sel_catalog = barrier(
+        jnp.asarray(sel_view.zgals)
+        if sel_view is not None
+        else _full_or_default(full_z)
+    )
+    dzgals_sel_catalog = barrier(
+        _full_or_default(sel_view.dzgals if sel_view is not None else full_dz)
+    )
+    wgals_sel_catalog = barrier(
+        _full_or_default(sel_view.wgals if sel_view is not None else full_w)
+    )
+    ngals_sel_raw = sel_view.ngals if sel_view is not None else full_n
     ngals_sel_catalog = (
         barrier(jnp.asarray(ngals_sel_raw, dtype=jnp.int32))
         if ngals_sel_raw is not None
         else None
     )
 
-    unique_pixels_pe_raw = data.get("unique_pixels_pe") if pe_uses_compact else None
-    unique_pixels_sel_raw = data.get("unique_pixels_sel") if sel_uses_compact else None
+    unique_pixels_pe_raw = pe_view.unique_pixels if pe_view is not None else None
+    unique_pixels_sel_raw = sel_view.unique_pixels if sel_view is not None else None
     unique_pixels_pe = (
         barrier(jnp.asarray(unique_pixels_pe_raw, dtype=jnp.int32))
         if unique_pixels_pe_raw is not None
@@ -138,19 +196,27 @@ def prepare_catalog_views(
         else None
     )
     sample_to_unique_pe_raw = (
-        data.get("sample_to_unique_pe") if pe_uses_compact else data.get("pixels_pe")
+        pe_view.sample_to_unique if pe_view is not None else data.get("pixels_pe")
     )
     sample_to_unique_sel_raw = (
-        data.get("sample_to_unique_sel") if sel_uses_compact else data.get("pixels_sel")
+        sel_view.sample_to_unique if sel_view is not None else data.get("pixels_sel")
     )
     sample_to_unique_pe = barrier(jnp.asarray(sample_to_unique_pe_raw, dtype=jnp.int32))
-    sample_to_unique_sel = barrier(jnp.asarray(sample_to_unique_sel_raw, dtype=jnp.int32))
+    sample_to_unique_sel = barrier(
+        jnp.asarray(sample_to_unique_sel_raw, dtype=jnp.int32)
+    )
 
-    full_z, full_dz, full_w, full_n = _full_catalog_arrays(data)
     union_unique_pixels = None
     if all(
         value is not None
-        for value in (full_z, full_dz, full_w, full_n, data.get("pixels_pe"), data.get("pixels_sel"))
+        for value in (
+            full_z,
+            full_dz,
+            full_w,
+            full_n,
+            data.get("pixels_pe"),
+            data.get("pixels_sel"),
+        )
     ):
         required_pixels = (
             [counterpart_pixel]
@@ -172,10 +238,16 @@ def prepare_catalog_views(
         zgals_union_catalog = barrier(jnp.asarray(full_z[union_unique_pixels]))
         dzgals_union_catalog = barrier(jnp.asarray(full_dz[union_unique_pixels]))
         wgals_union_catalog = barrier(jnp.asarray(full_w[union_unique_pixels]))
-        ngals_union_catalog = barrier(jnp.asarray(full_n[union_unique_pixels], dtype=jnp.int32))
+        ngals_union_catalog = barrier(
+            jnp.asarray(full_n[union_unique_pixels], dtype=jnp.int32)
+        )
         unique_pixels_union = barrier(jnp.asarray(union_unique_pixels, dtype=jnp.int32))
-        sample_to_unique_pe = barrier(jnp.asarray(sample_to_union_pe_raw, dtype=jnp.int32))
-        sample_to_unique_sel = barrier(jnp.asarray(sample_to_union_sel_raw, dtype=jnp.int32))
+        sample_to_unique_pe = barrier(
+            jnp.asarray(sample_to_union_pe_raw, dtype=jnp.int32)
+        )
+        sample_to_unique_sel = barrier(
+            jnp.asarray(sample_to_union_sel_raw, dtype=jnp.int32)
+        )
 
         zgals_pe_catalog = zgals_sel_catalog = zgals_union_catalog
         dzgals_pe_catalog = dzgals_sel_catalog = dzgals_union_catalog
@@ -195,28 +267,46 @@ def prepare_catalog_views(
             dN_obs_kde_pe, pixel_to_cache_idx_pe = cache_builder(
                 unique_pixels=union_unique_pixels,
                 zgals=full_z,
-                n_pix_catalog=int(data.get("n_pix_catalog", np.asarray(full_z).shape[0])),
+                n_pix_catalog=int(
+                    data.get("n_pix_catalog", np.asarray(full_z).shape[0])
+                ),
                 wgals=full_w,
                 ngals=full_n,
             )
             dN_obs_kde_sel = dN_obs_kde_pe
             pixel_to_cache_idx_sel = pixel_to_cache_idx_pe
         else:
+            pe_mask = (
+                None
+                if pe_view is None
+                else (pe_view.wgals if pe_view.wgals is not None else pe_view.ngals)
+            )
+            sel_mask = (
+                None
+                if sel_view is None
+                else (sel_view.wgals if sel_view.wgals is not None else sel_view.ngals)
+            )
             missing_cache_inputs = [
                 name
                 for name, value in (
-                    ("PE compact galaxy redshifts", data.get("zgals_pe")),
-                    ("selection compact galaxy redshifts", data.get("zgals_sel")),
-                    ("PE sample-to-unique map", data.get("sample_to_unique_pe")),
-                    ("selection sample-to-unique map", data.get("sample_to_unique_sel")),
                     (
-                        "PE galaxy mask (wgals or ngals)",
-                        data.get("wgals_pe") if data.get("wgals_pe") is not None else data.get("ngals_pe"),
+                        "PE compact galaxy redshifts",
+                        None if pe_view is None else pe_view.zgals,
                     ),
                     (
-                        "selection galaxy mask (wgals or ngals)",
-                        data.get("wgals_sel") if data.get("wgals_sel") is not None else data.get("ngals_sel"),
+                        "selection compact galaxy redshifts",
+                        None if sel_view is None else sel_view.zgals,
                     ),
+                    (
+                        "PE sample-to-unique map",
+                        None if pe_view is None else pe_view.sample_to_unique,
+                    ),
+                    (
+                        "selection sample-to-unique map",
+                        None if sel_view is None else sel_view.sample_to_unique,
+                    ),
+                    ("PE galaxy mask (wgals or ngals)", pe_mask),
+                    ("selection galaxy mask (wgals or ngals)", sel_mask),
                 )
                 if value is None
             ]
@@ -234,21 +324,21 @@ def prepare_catalog_views(
                 else:
                     raise RuntimeError(message)
             else:
-                n_pe_rows = int(np.asarray(data["zgals_pe"]).shape[0])
-                n_sel_rows = int(np.asarray(data["zgals_sel"]).shape[0])
+                n_pe_rows = int(np.asarray(pe_view.zgals).shape[0])
+                n_sel_rows = int(np.asarray(sel_view.zgals).shape[0])
                 dN_obs_kde_pe, pixel_to_cache_idx_pe = cache_builder(
                     unique_pixels=np.arange(n_pe_rows, dtype=np.int32),
-                    zgals=data["zgals_pe"],
+                    zgals=pe_view.zgals,
                     n_pix_catalog=n_pe_rows,
-                    wgals=data.get("wgals_pe"),
-                    ngals=data.get("ngals_pe"),
+                    wgals=pe_view.wgals,
+                    ngals=pe_view.ngals,
                 )
                 dN_obs_kde_sel, pixel_to_cache_idx_sel = cache_builder(
                     unique_pixels=np.arange(n_sel_rows, dtype=np.int32),
-                    zgals=data["zgals_sel"],
+                    zgals=sel_view.zgals,
                     n_pix_catalog=n_sel_rows,
-                    wgals=data.get("wgals_sel"),
-                    ngals=data.get("ngals_sel"),
+                    wgals=sel_view.wgals,
+                    ngals=sel_view.ngals,
                 )
 
     dN_obs_kde_pe = barrier(dN_obs_kde_pe) if dN_obs_kde_pe is not None else None
