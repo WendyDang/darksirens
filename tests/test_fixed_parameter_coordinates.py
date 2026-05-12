@@ -154,15 +154,15 @@ def test_pop_extractor_accepts_sampled_coordinate_length_with_fixed_population_p
         "fix_survey": False,
         "fixed_parameter_values": fixed_values,
     }
-    labels, *_rest, pop_labels, _survey_labels, _cosmo_labels, _n_cosmo, _n_survey, _model = (
-        build_parameter_space(
-            settings["pop_model"],
-            settings["fix_population"],
-            settings["fix_cosmology"],
-            settings["fix_survey"],
-            fixed_parameter_values=fixed_values,
-        )
+    res = build_parameter_space(
+        settings["pop_model"],
+        settings["fix_population"],
+        settings["fix_cosmology"],
+        settings["fix_survey"],
+        fixed_parameter_values=fixed_values,
     )
+    labels = res[0]
+    pop_labels = res[4]
     theta = jnp.arange(len(labels), dtype=jnp.float64)
     pop_theta = make_pop_extractor(settings)(theta)
 

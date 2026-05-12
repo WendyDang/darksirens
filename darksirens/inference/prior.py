@@ -34,6 +34,21 @@ def apply_block_prior_overrides(block_name, labels, lower, upper, overrides):
     return lower_out, upper_out
 
 
+def validate_fixed_parameter_overrides(all_bounds, prior_overrides, fixed_parameter_values):
+    """Validate and annotate labels that are both fixed and prior-overridden."""
+    statuses = {}
+    for label in fixed_parameter_values.keys() & prior_overrides.keys():
+        lower, upper = all_bounds[label]
+        fixed_value = float(fixed_parameter_values[label])
+        if fixed_value < lower or fixed_value > upper:
+            raise ValueError(
+                f"Fixed value for '{label}' ({fixed_value}) is outside the "
+                f"overridden prior bounds [{lower}, {upper}]."
+            )
+        statuses[label] = "fixed; override ignored"
+    return statuses
+
+
 def filter_fixed_parameters(labels, lower, upper, fixed_values):
     """Remove individually fixed labels from a sampled parameter block."""
     fixed_values = fixed_values or {}
@@ -131,6 +146,18 @@ def build_parameter_space(
         "survey", survey_labels, survey_lower, survey_upper, prior_overrides
     )
 
+    all_bounds = {
+        label: (float(lo), float(hi))
+        for label, lo, hi in (
+            list(zip(cosmo_labels, cosmo_lower, cosmo_upper))
+            + list(zip(pop_labels, pop_lower, pop_upper))
+            + list(zip(survey_labels, survey_lower, survey_upper))
+        )
+    }
+    fixed_parameter_statuses = validate_fixed_parameter_overrides(
+        all_bounds, prior_overrides, fixed_parameter_values
+    )
+
     sampled_cosmo_labels, sampled_cosmo_lower, sampled_cosmo_upper = filter_fixed_parameters(
         cosmo_labels, cosmo_lower, cosmo_upper, fixed_parameter_values
     )
@@ -180,6 +207,7 @@ def build_parameter_space(
         n_cosmo_eff,
         n_survey_eff,
         model_name,
+        fixed_parameter_statuses,
     )
 
 def make_prior_transform(lower, upper):

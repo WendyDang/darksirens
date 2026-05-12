@@ -66,6 +66,7 @@ def make_pop_extractor(settings: dict):
         _n_cosmo_eff,
         _n_survey_eff,
         _model_name,
+        _fixed_parameter_statuses,
     ) = build_parameter_space(
         pop_model              = pop_model_name,
         fix_population         = fix_population,

@@ -160,6 +160,7 @@ def _print_parameter_table(
     upper_bound:            list,
     fixed_parameter_values: dict,
     prior_overrides:        dict,
+    fixed_parameter_statuses: dict,
     fix_cosmology:          bool,
     fix_population:         bool,
     fix_survey:             bool,
@@ -185,15 +186,27 @@ def _print_parameter_table(
     _row("Parameter", f"{'Lower':>12}  {'Upper':>12}  Status", width=24)
     _row("─" * 24,    f"{'─' * 12}  {'─' * 12}  {'─' * 20}", width=24)
 
+    shown = set()
     for label, lo, hi in zip(labels, lower_bound, upper_bound):
+        shown.add(label)
         if label in fixed_parameter_values:
             val  = fixed_parameter_values[label]
-            note = f"fixed = {val:.6g}"
+            note = fixed_parameter_statuses.get(label, f"fixed = {val:.6g}")
         elif label in block_fixed:
             note = f"fixed = {block_fixed[label]:.6g}  (block)"
         else:
             note = "← overridden" if label in prior_overrides else ""
         print(f"  │    {label:<24} {lo:>12.4g}  {hi:>12.4g}  {note}")
+
+    for label, value in fixed_parameter_values.items():
+        if label in shown:
+            continue
+        if label in prior_overrides:
+            lo, hi = prior_overrides[label]
+            note = fixed_parameter_statuses.get(label, f"fixed = {value:.6g}")
+            print(f"  │    {label:<24} {float(lo):>12.4g}  {float(hi):>12.4g}  {note}")
+        else:
+            print(f"  │    {label:<24} {'—':>12}  {'—':>12}  fixed = {value:.6g}")
 
     _row("─" * 24, f"{'─' * 12}  {'─' * 12}  {'─' * 20}", width=24)
 
@@ -722,6 +735,7 @@ def main():
     )
     labels, lower_bound, upper_bound = res[0], res[1], res[2]
     n_pop_eff, n_cosmo_eff, n_survey_eff, model_name = res[3], res[7], res[8], res[9]
+    fixed_parameter_statuses = res[10]
 
     _, _, pop_labels_all, _ = pop_model_prior_parser(opts.pop_model)
     pop_params_fid  = get_fixed_population_params(opts.pop_model)
@@ -732,7 +746,7 @@ def main():
 
     _print_parameter_table(
         labels, lower_bound, upper_bound,
-        fixed_parameter_values, prior_overrides,
+        fixed_parameter_values, prior_overrides, fixed_parameter_statuses,
         opts.fix_cosmology, opts.fix_population, opts.fix_survey,
         pop_params_fid, pop_labels_all,
     )
