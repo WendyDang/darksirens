@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 
 import h5py
@@ -35,7 +35,7 @@ from jax.scipy.special import erf
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
-from scipy.integrate import cumulative_trapezoid
+from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.special import expit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -120,6 +120,8 @@ def validate_population_config_against_registry(pop: PopulationConfig | None = N
 class SurveyConfig:
     """Simple EM selection model for catalog incompleteness."""
 
+    n0: float = 1.0e-2
+    delta: float = 0.0
     footprint_dec_min_deg: float = -40.0
     footprint_dec_max_deg: float = 80.0
     z_hard_max: float = 1.2
@@ -145,6 +147,14 @@ def _cosmology_grids(cosmo: FlatLambdaCDM, zmax: float, ngrid: int = 20_000) -> 
     vc_cdf = cumulative_trapezoid(dvc_dz, z, initial=0.0)
     vc_cdf /= vc_cdf[-1]
     return {"z": z, "dc": dc, "dl": dl, "dvc_dz": dvc_dz, "vc_cdf": vc_cdf}
+
+
+def _expected_complete_catalog_count(n0: float, delta: float, grids: dict[str, np.ndarray]) -> float:
+    """Expected full-sky galaxy count over the generation redshift range."""
+
+    z = grids["z"]
+    dndz = n0 * grids["dvc_dz"] * (1.0 + z) ** delta
+    return float(trapezoid(dndz, z))
 
 
 def _sample_uniform_comoving_z(rng: np.random.Generator, grids: dict[str, np.ndarray], n: int) -> np.ndarray:
@@ -505,7 +515,10 @@ def write_mock_data(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(args.seed)
     pop = PopulationConfig()
     validate_population_config_against_registry(pop)
-    survey = SurveyConfig()
+    survey = SurveyConfig(
+        n0=SurveyConfig.n0 if args.n0 is None else args.n0,
+        delta=args.galaxy_density_delta,
+    )
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -513,7 +526,28 @@ def write_mock_data(args: argparse.Namespace) -> None:
     zmax = float(args.zmax)
     grids = _cosmology_grids(cosmo, zmax)
 
-    complete = _generate_complete_catalog(rng, args.n_galaxies, grids, survey)
+    if args.n0 is None:
+        density_integral = _expected_complete_catalog_count(1.0, survey.delta, grids)
+        survey = replace(survey, n0=float(args.n_galaxies) / density_integral)
+        expected_complete_count = float(args.n_galaxies)
+        realized_complete_count = int(args.n_galaxies)
+        complete_count_source = "--n-galaxies"
+    elif args.n_galaxies is not None:
+        expected_complete_count = _expected_complete_catalog_count(survey.n0, survey.delta, grids)
+        realized_complete_count = int(args.n_galaxies)
+        complete_count_source = "--n-galaxies override"
+    else:
+        expected_complete_count = _expected_complete_catalog_count(survey.n0, survey.delta, grids)
+        realized_complete_count = int(rng.poisson(expected_complete_count))
+        complete_count_source = "--n0"
+
+    if realized_complete_count <= 0:
+        raise ValueError(
+            "Complete catalog generation requires at least one galaxy; "
+            f"got {realized_complete_count} from {complete_count_source}."
+        )
+
+    complete = _generate_complete_catalog(rng, realized_complete_count, grids, survey)
     observed = _apply_survey_selection(rng, complete, survey)
     zerr = survey.redshift_error_floor + survey.redshift_error_slope * (1.0 + complete["z"])
     weights = np.ones(observed.sum())
@@ -541,6 +575,13 @@ def write_mock_data(args: argparse.Namespace) -> None:
             "raw_mock_parameters": asdict(pop),
         },
         "survey": asdict(survey),
+        "complete_catalog": {
+            "count_source": complete_count_source,
+            "n0": survey.n0,
+            "delta": survey.delta,
+            "expected_count": expected_complete_count,
+            "realized_count": realized_complete_count,
+        },
         "snr_threshold": args.snr_threshold,
         "pop_model_for_inference": POPULATION_SOURCE_MODEL,
     }
@@ -595,7 +636,11 @@ def write_mock_data(args: argparse.Namespace) -> None:
             f.create_dataset(key, data=sel[key], compression="gzip", shuffle=True)
 
     print("Mock dark-sirens data written:")
-    print(f"  complete catalog : {complete_path} ({args.n_galaxies:,} galaxies)")
+    print(
+        f"  complete catalog : {complete_path} "
+        f"({realized_complete_count:,} galaxies from {complete_count_source}; "
+        f"expected {expected_complete_count:,.2f})"
+    )
     print(f"  observed survey  : {raw_path} ({observed.sum():,} galaxies retained)")
     print(f"  pixelated survey : {pixel_path} (nside={args.nside})")
     print(f"  GW posteriors    : {gw_path} ({args.nobs} events x {args.nsamp} samples)")
@@ -606,7 +651,24 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outdir", default="data/mock_dark_sirens", help="Output directory for HDF5 products.")
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--n-galaxies", type=int, default=50_000)
+    parser.add_argument(
+        "--n-galaxies",
+        type=int,
+        default=None,
+        help="Complete-catalog galaxy count. Defaults to 50,000 when --n0 is not set; overrides --n0 when set.",
+    )
+    parser.add_argument(
+        "--n0",
+        type=float,
+        default=None,
+        help="Comoving galaxy density in galaxies per Mpc^3 used to derive the complete-catalog count.",
+    )
+    parser.add_argument(
+        "--galaxy-density-delta",
+        type=float,
+        default=0.0,
+        help="Galaxy number-density evolution exponent in n(z) = n0 (1 + z)^delta.",
+    )
     parser.add_argument("--nobs", type=int, default=8)
     parser.add_argument("--nsamp", type=int, default=512)
     parser.add_argument("--ndraw", type=int, default=80_000)
@@ -635,6 +697,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--Om0", type=float, default=0.3075)
     parser.add_argument("--snr-threshold", type=float, default=8.0)
     args = parser.parse_args()
+    if args.n_galaxies is None and args.n0 is None:
+        args.n_galaxies = 50_000
+    if args.n_galaxies is not None and args.n_galaxies <= 0:
+        parser.error("--n-galaxies must be positive")
+    if args.n0 is not None and args.n0 <= 0:
+        parser.error("--n0 must be positive")
     if args.selection_batch_size <= 0:
         parser.error("--selection-batch-size must be positive")
     if args.ndraw <= 0:
