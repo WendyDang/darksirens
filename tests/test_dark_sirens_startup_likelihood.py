@@ -100,6 +100,8 @@ def test_dark_sirens_likelihood_evaluates_once_before_sampling():
     value = likelihood(jnp.array([]))
     assert value.shape == ()
     assert not bool(jnp.isnan(value))
+    # Reference value from the pre-refactor monolithic likelihood implementation.
+    np.testing.assert_allclose(float(value), 0.016343561059983358, rtol=1e-12)
 
 
 def test_dark_sirens_cache_is_built_once_for_unique_pixels(monkeypatch):
