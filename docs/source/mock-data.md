@@ -32,6 +32,16 @@ python scripts/mock_data/generate_mock_data.py \
 If `--dL-fractional-uncertainty` or `--sky-uncertainty-deg` is omitted, that
 width falls back to the SNR-scaled heuristic.
 
+Selection injections are drawn in vectorized NumPy chunks.  `--ndraw` is the
+maximum number of proposed injections, and `--selection-batch-size` only controls
+the chunk size used to reach that total.  Unless you explicitly pass
+`--selection-target-detections` or `--selection-per-observation-factor`, the
+generator exhausts all `--ndraw` proposals so changing `NDRAW` changes the
+selection sample.  The logs report a detected-injection proxy `Neff`, computed
+from inverse proposal-density weights, as a conservative health check; for
+production-like studies increase `--ndraw` until this proxy comfortably exceeds
+the inference reliability threshold (`5 * Nobs`) with margin.
+
 The generator writes files that can be consumed directly by `darksirens_inference`:
 
 | File | Purpose |
@@ -72,6 +82,12 @@ You can override the mock size without editing the script, for example:
 ```bash
 NOBS=5 NSAMP=256 NDRAW=50000 NSIDE=16 bash scripts/mock_data/run_mock_data_test.sh
 ```
+
+By default the smoke-test script no longer sets a detected-injection stopping
+target, so it consumes `NDRAW` proposed selection injections.  If you need a
+fast cap for local debugging, set either `SELECTION_TARGET_DETECTIONS` or
+`SELECTION_PER_OBSERVATION_FACTOR`; those caps intentionally make `NDRAW` an
+upper bound rather than the exact number of proposals.
 
 The smoke-test script pins common BLAS/OpenMP thread counts to one and disables
 JAX preallocation unless the caller has already set those environment variables.

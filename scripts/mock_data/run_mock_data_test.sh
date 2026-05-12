@@ -36,7 +36,8 @@ NOBS="${NOBS:-3}"
 NSAMP="${NSAMP:-128}"
 NDRAW="${NDRAW:-50000}"
 SELECTION_BATCH_SIZE="${SELECTION_BATCH_SIZE:-50000}"
-SELECTION_PER_OBSERVATION_FACTOR="${SELECTION_PER_OBSERVATION_FACTOR:-6}"
+SELECTION_PER_OBSERVATION_FACTOR="${SELECTION_PER_OBSERVATION_FACTOR:-}"
+SELECTION_TARGET_DETECTIONS="${SELECTION_TARGET_DETECTIONS:-}"
 
 # Fractional/absolute widths used to generate mock GW PE samples.
 DL_FRAC_UNCERTAINTY="${DL_FRAC_UNCERTAINTY:-0.20}"
@@ -65,10 +66,19 @@ Starting verbose mock data test.
   NSAMP=${NSAMP}
   NDRAW=${NDRAW}
   SELECTION_BATCH_SIZE=${SELECTION_BATCH_SIZE}
-  SELECTION_PER_OBSERVATION_FACTOR=${SELECTION_PER_OBSERVATION_FACTOR}
+  SELECTION_PER_OBSERVATION_FACTOR=${SELECTION_PER_OBSERVATION_FACTOR:-<disabled>}
+  SELECTION_TARGET_DETECTIONS=${SELECTION_TARGET_DETECTIONS:-<disabled>}
   RUN_INFERENCE=${RUN_INFERENCE:-0}
 EOF
 
+selection_target_args=""
+if [ -n "${SELECTION_TARGET_DETECTIONS}" ]; then
+  selection_target_args="--selection-target-detections ${SELECTION_TARGET_DETECTIONS}"
+elif [ -n "${SELECTION_PER_OBSERVATION_FACTOR}" ]; then
+  selection_target_args="--selection-per-observation-factor ${SELECTION_PER_OBSERVATION_FACTOR}"
+fi
+
+# shellcheck disable=SC2086 # intentional splitting of optional selection_target_args
 python scripts/mock_data/generate_mock_data.py \
   --outdir "${OUTDIR}" \
   --seed "${SEED}" \
@@ -81,7 +91,7 @@ python scripts/mock_data/generate_mock_data.py \
   --nsamp "${NSAMP}" \
   --ndraw "${NDRAW}" \
   --selection-batch-size "${SELECTION_BATCH_SIZE}" \
-  --selection-per-observation-factor "${SELECTION_PER_OBSERVATION_FACTOR}" \
+  ${selection_target_args} \
   --dL-fractional-uncertainty "${DL_FRAC_UNCERTAINTY}" \
   --m1det-fractional-uncertainty "${M1DET_FRAC_UNCERTAINTY}" \
   --m2det-fractional-uncertainty "${M2DET_FRAC_UNCERTAINTY}" \
