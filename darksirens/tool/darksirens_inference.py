@@ -51,13 +51,11 @@ import h5py
 
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 
-from darksirens.gw.utils import load_gw_samples, load_selection_samples
 from darksirens.gw.populations import get_fixed_population_params, pop_model_prior_parser
 from darksirens.gw.populations.utils import (
     configure_normalization_grids,
     normalization_grid_settings,
 )
-from darksirens.em.utils import load_survey
 from darksirens.inference.data import load_all_data, validate_loaded_survey_shapes
 from darksirens.inference.likelihood import make_likelihood
 from darksirens.em.completion import build_pixel_kde_cache, completion_clip_diagnostics
