@@ -34,29 +34,42 @@ def apply_block_prior_overrides(block_name, labels, lower, upper, overrides):
     return lower_out, upper_out
 
 
-def apply_block_fixed_values(block_name, labels, lower, upper, fixed_values):
-    """Apply per-parameter fixed values by collapsing bounds to [value, value]."""
-    if fixed_values is None:
-        return list(lower), list(upper)
+def filter_fixed_parameters(labels, lower, upper, fixed_values):
+    """Remove individually fixed labels from a sampled parameter block."""
+    fixed_values = fixed_values or {}
+    sampled = [
+        (label, lo, hi)
+        for label, lo, hi in zip(labels, lower, upper)
+        if label not in fixed_values
+    ]
+    if not sampled:
+        return [], [], []
+    sampled_labels, sampled_lower, sampled_upper = zip(*sampled)
+    return list(sampled_labels), list(sampled_lower), list(sampled_upper)
 
-    if not isinstance(fixed_values, dict):
-        raise TypeError(
-            f"Fixed values for block '{block_name}' must be a dict, got {type(fixed_values).__name__}."
+
+def resolve_parameter_values(sampled_coordinates, sampled_labels, fixed_parameter_values=None):
+    """Map sampled coordinates plus fixed values to a label -> value dictionary.
+
+    ``fixed_parameter_values`` consistently means a parameter is absent from the
+    sampled coordinate vector.  This helper is the shared inverse operation: it
+    validates that the coordinate length matches ``sampled_labels`` and then
+    merges those sampled coordinates with the fixed-value map.
+    """
+    fixed_parameter_values = fixed_parameter_values or {}
+    if len(sampled_coordinates) != len(sampled_labels):
+        raise ValueError(
+            f"Coordinate mismatch: expected {len(sampled_labels)} sampled "
+            f"coordinates, got {len(sampled_coordinates)}."
         )
 
-    lower_out = list(lower)
-    upper_out = list(upper)
-    label_to_index = {label: idx for idx, label in enumerate(labels)}
+    values = {
+        label: sampled_coordinates[idx]
+        for idx, label in enumerate(sampled_labels)
+    }
+    values.update({label: float(value) for label, value in fixed_parameter_values.items()})
+    return values
 
-    for label, value in fixed_values.items():
-        if label not in label_to_index:
-            continue
-        idx = label_to_index[label]
-        v = float(value)
-        lower_out[idx] = v
-        upper_out[idx] = v
-
-    return lower_out, upper_out
 
 def build_parameter_space(
     pop_model,
@@ -118,46 +131,41 @@ def build_parameter_space(
         "survey", survey_labels, survey_lower, survey_upper, prior_overrides
     )
 
-    # Apply fixed-value presets after prior overrides so fixed values always win.
-    cosmo_lower, cosmo_upper = apply_block_fixed_values(
-        "cosmology", cosmo_labels, cosmo_lower, cosmo_upper, fixed_parameter_values
+    sampled_cosmo_labels, sampled_cosmo_lower, sampled_cosmo_upper = filter_fixed_parameters(
+        cosmo_labels, cosmo_lower, cosmo_upper, fixed_parameter_values
     )
-    pop_lower, pop_upper = apply_block_fixed_values(
-        "population", pop_labels, pop_lower, pop_upper, fixed_parameter_values
+    sampled_pop_labels, sampled_pop_lower, sampled_pop_upper = filter_fixed_parameters(
+        pop_labels, pop_lower, pop_upper, fixed_parameter_values
     )
-    survey_lower, survey_upper = apply_block_fixed_values(
-        "survey", survey_labels, survey_lower, survey_upper, fixed_parameter_values
+    sampled_survey_labels, sampled_survey_lower, sampled_survey_upper = filter_fixed_parameters(
+        survey_labels, survey_lower, survey_upper, fixed_parameter_values
     )
-
-    n_cosmo = len(cosmo_labels)
-    n_pop = len(pop_labels)
-    n_survey = len(survey_labels)
 
     labels = []
     lower = []
     upper = []
 
     if not fix_cosmology:
-        labels += cosmo_labels
-        lower += cosmo_lower
-        upper += cosmo_upper
-        n_cosmo_eff = n_cosmo
+        labels += sampled_cosmo_labels
+        lower += sampled_cosmo_lower
+        upper += sampled_cosmo_upper
+        n_cosmo_eff = len(sampled_cosmo_labels)
     else:
         n_cosmo_eff = 0
 
     if not fix_population:
-        labels += pop_labels
-        lower += list(pop_lower)
-        upper += list(pop_upper)
-        n_pop_eff = n_pop
+        labels += sampled_pop_labels
+        lower += sampled_pop_lower
+        upper += sampled_pop_upper
+        n_pop_eff = len(sampled_pop_labels)
     else:
         n_pop_eff = 0
 
     if not fix_survey:
-        labels += survey_labels
-        lower += survey_lower
-        upper += survey_upper
-        n_survey_eff = n_survey
+        labels += sampled_survey_labels
+        lower += sampled_survey_lower
+        upper += sampled_survey_upper
+        n_survey_eff = len(sampled_survey_labels)
     else:
         n_survey_eff = 0
 
