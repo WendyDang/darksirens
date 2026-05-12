@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+import sys
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 import h5py
@@ -37,23 +38,82 @@ import astropy.units as u
 from scipy.integrate import cumulative_trapezoid
 from scipy.special import expit
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from darksirens.gw.populations.registry import get_fixed_population_params
+
 C_KM_S = 299_792.458
+POPULATION_SOURCE_MODEL = "powerlaw+peak_shared_beta_spin"
+_POPULATION_PARAM_COUNT = 12
+
+
+def _population_config_kwargs_from_registry() -> dict[str, float]:
+    """Map package fiducials onto the mock's explicit population config.
+
+    ``get_fixed_population_params`` returns the package's fixed-parameter
+    vector in registry order.  For the two-component POWER LAW + PEAK mock,
+    the leading stick-breaking value is used as the mock's Gaussian
+    ``peak_fraction``; equivalently, the generated mock uses
+    ``1 - peak_fraction`` for the power-law draw path.
+    """
+
+    theta = np.asarray(get_fixed_population_params(POPULATION_SOURCE_MODEL), dtype=float)
+    if theta.shape != (_POPULATION_PARAM_COUNT,):
+        raise ValueError(
+            f"{POPULATION_SOURCE_MODEL!r} fiducials have shape {theta.shape}; "
+            f"expected ({_POPULATION_PARAM_COUNT},) for the mock parameter mapping."
+        )
+
+    return {
+        "peak_fraction": float(theta[0]),
+        "alpha": float(theta[1]),
+        "mmin": float(theta[2]),
+        "mmax": float(theta[3]),
+        "peak_mu": float(theta[6]),
+        "peak_sigma": float(theta[7]),
+        "beta": float(theta[8]),
+        "chi_mu": float(theta[9]),
+        "chi_sigma": float(theta[10]),
+        "gamma": float(theta[11]),
+    }
+
+
+_POPULATION_REGISTRY_DEFAULTS = _population_config_kwargs_from_registry()
 
 
 @dataclass(frozen=True)
 class PopulationConfig:
     """Fiducial POWER LAW + PEAK, shared beta, shared spin parameters."""
 
-    alpha: float = 3.4
-    mmin: float = 5.0
-    mmax: float = 85.0
-    peak_fraction: float = 0.10
-    peak_mu: float = 35.0
-    peak_sigma: float = 4.0
-    beta: float = 1.3
-    chi_mu: float = 0.0
-    chi_sigma: float = 0.15
-    gamma: float = 0.0
+    alpha: float = _POPULATION_REGISTRY_DEFAULTS["alpha"]
+    mmin: float = _POPULATION_REGISTRY_DEFAULTS["mmin"]
+    mmax: float = _POPULATION_REGISTRY_DEFAULTS["mmax"]
+    peak_fraction: float = _POPULATION_REGISTRY_DEFAULTS["peak_fraction"]
+    peak_mu: float = _POPULATION_REGISTRY_DEFAULTS["peak_mu"]
+    peak_sigma: float = _POPULATION_REGISTRY_DEFAULTS["peak_sigma"]
+    beta: float = _POPULATION_REGISTRY_DEFAULTS["beta"]
+    chi_mu: float = _POPULATION_REGISTRY_DEFAULTS["chi_mu"]
+    chi_sigma: float = _POPULATION_REGISTRY_DEFAULTS["chi_sigma"]
+    gamma: float = _POPULATION_REGISTRY_DEFAULTS["gamma"]
+
+
+def validate_population_config_against_registry(pop: PopulationConfig | None = None) -> None:
+    """Fail loudly if mock population defaults drift from registry fiducials."""
+
+    expected = _population_config_kwargs_from_registry()
+    actual = {field.name: getattr(pop or PopulationConfig(), field.name) for field in fields(PopulationConfig)}
+    mismatches = [
+        f"{name}: mock={actual[name]!r}, registry={expected[name]!r}"
+        for name in actual
+        if not np.isclose(actual[name], expected[name], rtol=0.0, atol=1.0e-12)
+    ]
+    if mismatches:
+        raise ValueError(
+            "PopulationConfig no longer matches "
+            f"{POPULATION_SOURCE_MODEL!r} registry fiducials: " + "; ".join(mismatches)
+        )
 
 
 @dataclass(frozen=True)
@@ -444,6 +504,7 @@ def _selection_injections(
 def write_mock_data(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(args.seed)
     pop = PopulationConfig()
+    validate_population_config_against_registry(pop)
     survey = SurveyConfig()
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
@@ -475,10 +536,13 @@ def write_mock_data(args: argparse.Namespace) -> None:
     metadata = {
         "seed": args.seed,
         "cosmology": {"H0": args.H0, "Om0": args.Om0},
-        "population": asdict(pop),
+        "population": {
+            "source_model": POPULATION_SOURCE_MODEL,
+            "raw_mock_parameters": asdict(pop),
+        },
         "survey": asdict(survey),
         "snr_threshold": args.snr_threshold,
-        "pop_model_for_inference": "powerlaw+peak_shared_beta_spin",
+        "pop_model_for_inference": POPULATION_SOURCE_MODEL,
     }
 
     complete_path = out / "mock_galaxy_catalog_complete.h5"
@@ -513,7 +577,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
         f.attrs["mock_data"] = True
         f.attrs["nobs"] = int(args.nobs)
         f.attrs["nsamp"] = int(args.nsamp)
-        f.attrs["pop_model"] = "powerlaw+peak_shared_beta_spin"
+        f.attrs["pop_model"] = POPULATION_SOURCE_MODEL
         f.attrs["metadata_json"] = json.dumps(metadata)
         for key, val in post.items():
             f.create_dataset(key, data=val, compression="gzip", shuffle=True)
@@ -525,7 +589,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
     with h5py.File(sel_path, "w") as f:
         f.attrs["mock_data"] = True
         f.attrs["Ndraw"] = int(sel["Ndraw"])
-        f.attrs["pop_model"] = "powerlaw+peak_shared_beta_spin"
+        f.attrs["pop_model"] = POPULATION_SOURCE_MODEL
         f.attrs["metadata_json"] = json.dumps(metadata)
         for key in ["m1detsels", "m2detsels", "dLsels", "chieffsels", "rasels", "decsels", "p_draw"]:
             f.create_dataset(key, data=sel[key], compression="gzip", shuffle=True)

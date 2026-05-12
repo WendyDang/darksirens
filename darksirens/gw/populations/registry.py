@@ -47,10 +47,6 @@ from .parametric import (
     PowerLaw, BrokenPowerLaw, Gaussian,
     PowerLawPairing, TruncatedGaussianSpin,
 )
-from .gp import (
-    GaussianProcessMass1D, GaussianProcessMassRatio1D,
-    GaussianProcessPairing2D,
-)
 
 
 # ============================================================
@@ -268,6 +264,8 @@ def _gp_mass(
     ls    = GP_LS,
     y     = GP_Y,
 ) -> GaussianProcessMass1D:
+    from .gp import GaussianProcessMass1D
+
     if y_labels is None:
         y_labels = [rf"$y_{{{i}}}$" for i in range(11)]
     return GaussianProcessMass1D(
@@ -293,6 +291,8 @@ def _gp_pairing(
     ls   = GP_LS,
     y    = GP_Y_PAIR,
 ) -> GaussianProcessMassRatio1D:
+    from .gp import GaussianProcessMassRatio1D
+
     if y_labels is None:
         y_labels = [rf"$y_{{q,{i}}}$" for i in range(5)]
     return GaussianProcessMassRatio1D(
@@ -316,6 +316,8 @@ def _gp_mass_pairing_2d(
     ls_q  = GP_LS_Q_PAIR,
     y     = GP_Y_PAIR,
 ) -> GaussianProcessPairing2D:
+    from .gp import GaussianProcessPairing2D
+
     if y_labels is None:
         y_labels = [rf"$y_{{q,{i}}}$" for i in range(16)]
     return GaussianProcessPairing2D(
@@ -477,6 +479,7 @@ _RAW_MODELS: dict[str, tuple] = {
 }
 
 _MODEL_REGISTRY:  dict[str, PopulationModel] = {}
+_MODEL_FACTORIES: dict[str, tuple] = {}
 MODEL_NAME_LATEX: dict[str, str]             = {"mock_data": r"\text{Mock}"}
 
 for _name, (_mix_fn, _latex) in _RAW_MODELS.items():
@@ -487,7 +490,7 @@ for _name, (_mix_fn, _latex) in _RAW_MODELS.items():
         (True,  True,  "_shared_beta_spin", r" (Shared $\beta$, Spin)"),
     ]:
         _key = _name + _suffix
-        _MODEL_REGISTRY[_key] = PopulationModel(mixture=_mix_fn(shared_beta=_sb, shared_spin=_ss))
+        _MODEL_FACTORIES[_key] = (_mix_fn, _sb, _ss)
         MODEL_NAME_LATEX[_key] = _latex + _label_suffix
 
 
@@ -668,11 +671,19 @@ def get_model(pop_model: str) -> PopulationModel:
     try:
         return _MODEL_REGISTRY[pop_model]
     except KeyError:
+        pass
+
+    try:
+        mix_fn, shared_beta, shared_spin = _MODEL_FACTORIES[pop_model]
+    except KeyError:
         raise ValueError(
             f"Unknown model {pop_model!r}. "
-            f"Available: {sorted(_MODEL_REGISTRY.keys())}"
+            f"Available: {sorted(_MODEL_FACTORIES.keys())}"
         )
 
+    model = PopulationModel(mixture=mix_fn(shared_beta=shared_beta, shared_spin=shared_spin))
+    _MODEL_REGISTRY[pop_model] = model
+    return model
 
 def pop_model_parser(pop_model: str):
     return get_model(pop_model).log_p_pop
