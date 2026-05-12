@@ -104,6 +104,56 @@ def _fatal(msg: str):
     sys.exit(1)
 
 
+def _format_option_value(value):
+    """Format parsed CLI option values for human-readable config tables."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if value is None:
+        return "none"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, sort_keys=True, default=str)
+    return str(value)
+
+
+def _print_all_cli_options(optp: ArgumentParser, opts, *, normalization_grid: dict):
+    """Print every parsed CLI option in argparse group order."""
+    _section("All CLI Options")
+    first_group = True
+    seen: set[str] = set()
+
+    for group in optp._action_groups:
+        group_rows = []
+        for action in group._group_actions:
+            if action.dest == "help" or not hasattr(opts, action.dest):
+                continue
+            group_rows.append(action.dest)
+
+        if not group_rows:
+            continue
+
+        if not first_group:
+            print("  │")
+        first_group = False
+
+        _row(f"[{group.title}]", "")
+        for dest in group_rows:
+            seen.add(dest)
+            _row(f"  {dest}", _format_option_value(getattr(opts, dest)))
+
+    ungrouped = sorted(set(vars(opts)) - seen)
+    if ungrouped:
+        if not first_group:
+            print("  │")
+        _row("[Other]", "")
+        for dest in ungrouped:
+            _row(f"  {dest}", _format_option_value(getattr(opts, dest)))
+
+    print("  │")
+    _row("[Derived]", "")
+    _row("  normalization_grid", _format_option_value(normalization_grid))
+    _end()
+
+
 # ── CLI helpers ────────────────────────────────────────────────────────────────
 
 def str_to_bool(value):
@@ -593,12 +643,22 @@ def main():
 
     prior_overrides        = parse_json_arg(opts.prior_overrides,        "prior_overrides")
     fixed_parameter_values = parse_json_arg(opts.fixed_parameter_values, "fixed_parameter_values")
-    opts.counterpart       = parse_counterpart_arg(opts.counterpart)
+    opts.prior_overrides        = prior_overrides if prior_overrides else None
+    opts.fixed_parameter_values = (
+        fixed_parameter_values if fixed_parameter_values else None
+    )
+    opts.counterpart            = parse_counterpart_arg(opts.counterpart)
 
     if opts.universe_model == "bright_sirens":
         # Bright sirens use a synthetic one-object catalog fixed by the
         # counterpart rather than survey-completion hyperparameters.
         opts.fix_survey = True
+
+    _print_all_cli_options(
+        optp,
+        opts,
+        normalization_grid=normalization_grid_settings().to_dict(),
+    )
 
     # ── Validation ─────────────────────────────────────────────────
 
