@@ -560,6 +560,34 @@ def _posterior_samples(
     return {k: np.concatenate(v) for k, v in arrays.items()}
 
 
+def _kish_effective_sample_size(weights: np.ndarray) -> float:
+    """Return the Kish effective sample size for positive finite weights."""
+
+    w = np.asarray(weights, dtype=float)
+    w = w[np.isfinite(w) & (w > 0.0)]
+    if w.size == 0:
+        return 0.0
+    sum_w = float(np.sum(w))
+    sum_w2 = float(np.sum(w * w))
+    if sum_w2 <= 0.0:
+        return 0.0
+    return sum_w * sum_w / sum_w2
+
+
+def _selection_proxy_neff(p_draw_parts: list[np.ndarray]) -> float:
+    """Estimate detected-injection N_eff using inverse proposal-density weights.
+
+    The full inference-time N_eff depends on the proposed cosmology, population,
+    and catalog state.  During mock generation we do not have those sampled
+    parameters, so this proxy reports a conservative importance-sampling health
+    check for the detected injection cloud.
+    """
+
+    if not p_draw_parts:
+        return 0.0
+    p_draw = np.concatenate(p_draw_parts)
+    return _kish_effective_sample_size(1.0 / np.maximum(p_draw, 1.0e-300))
+
 def _selection_injections(
     rng: np.random.Generator,
     ndraw: int,
@@ -567,6 +595,7 @@ def _selection_injections(
     pop: PopulationConfig,
     snr_threshold: float,
     batch_size: int,
+    nobs: int,
     target_detections: int | None = None,
     *,
     verbose: bool = True,
@@ -584,6 +613,8 @@ def _selection_injections(
         raise ValueError("selection batch size must be positive")
     if ndraw <= 0:
         raise ValueError("selection ndraw must be positive")
+    if nobs <= 0:
+        raise ValueError("selection nobs must be positive")
     if target_detections is not None and target_detections <= 0:
         raise ValueError("selection target detections must be positive when provided")
 
@@ -737,10 +768,12 @@ def _selection_injections(
                 _progress_update(detection_progress, kept_count)
 
             rate = _percent(n_detected, total_draws)
+            proxy_neff = _selection_proxy_neff(detected["p_draw"])
             _progress_set_postfix(
                 draw_progress,
                 batches=batch_index,
                 kept=f"{n_detected:,}",
+                neff=f"{proxy_neff:,.1f}",
                 batch_det=f"{detected_in_batch:,}",
                 rate=f"{rate:.2f}%",
             )
@@ -755,18 +788,28 @@ def _selection_injections(
                 f"detected {detected_in_batch:,}, kept {kept_count:,}, "
                 f"cumulative kept {n_detected:,}"
                 + (f"/{target_detections:,}" if target_detections is not None else "")
-                + f" ({rate:.2f}% kept/drawn).",
+                + f", proxy Neff={proxy_neff:,.1f} "
+                + f"({rate:.2f}% kept/drawn).",
                 verbose=verbose,
             )
     finally:
         _progress_close(draw_progress)
         _progress_close(detection_progress)
 
+    proxy_neff = _selection_proxy_neff(detected["p_draw"])
+    recommended_min = 5 * nobs
     _log(
         f"Selection injection generation complete: kept {n_detected:,} detected injections from {total_draws:,} draws "
-        f"({_percent(n_detected, total_draws):.2f}% kept/drawn).",
+        f"({_percent(n_detected, total_draws):.2f}% kept/drawn); "
+        f"detected-injection proxy Neff={proxy_neff:,.1f}.",
         verbose=verbose,
     )
+    if proxy_neff <= recommended_min:
+        _log(
+            f"WARNING: detected-injection proxy Neff is below 5 * Nobs ({recommended_min:,}). "
+            "Increase --ndraw (or use a larger explicit --selection-target-detections) before relying on sampler results.",
+            verbose=verbose,
+        )
 
     return {
         **{
@@ -775,6 +818,7 @@ def _selection_injections(
         },
         "Ndraw": total_draws,
         "n_detected": n_detected,
+        "proxy_neff": proxy_neff,
     }
 
 
@@ -812,6 +856,9 @@ def write_mock_data(args: argparse.Namespace) -> None:
             "ndraw": args.ndraw,
             "selection_batch_size": args.selection_batch_size,
             "selection_target_detections": args.selection_target_detections,
+            "selection_effective_ndraw": (
+                args.ndraw if args.selection_target_detections is None else "min(ndraw, target stop)"
+            ),
             "nside": args.nside,
             "zmax": args.zmax,
             "snr_threshold": args.snr_threshold,
@@ -903,6 +950,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
         pop,
         args.snr_threshold,
         args.selection_batch_size,
+        args.nobs,
         args.selection_target_detections,
         verbose=verbose,
     )
@@ -978,6 +1026,8 @@ def write_mock_data(args: argparse.Namespace) -> None:
     with h5py.File(sel_path, "w") as f:
         f.attrs["mock_data"] = True
         f.attrs["Ndraw"] = int(sel["Ndraw"])
+        f.attrs["n_detected"] = int(sel["n_detected"])
+        f.attrs["proxy_neff"] = float(sel["proxy_neff"])
         f.attrs["pop_model"] = POPULATION_SOURCE_MODEL
         f.attrs["metadata_json"] = json.dumps(metadata)
         for key in ["m1detsels", "m2detsels", "dLsels", "chieffsels", "rasels", "decsels", "p_draw"]:
@@ -993,7 +1043,11 @@ def write_mock_data(args: argparse.Namespace) -> None:
     _log(f"  observed survey  : {raw_path} ({observed.sum():,} galaxies retained)", verbose=True)
     _log(f"  pixelated survey : {pixel_path} (nside={args.nside})", verbose=True)
     _log(f"  GW posteriors    : {gw_path} ({args.nobs} events x {args.nsamp} samples)", verbose=True)
-    _log(f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{sel['Ndraw']:,} detected injections)", verbose=True)
+    _log(
+        f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{sel['Ndraw']:,} detected injections; "
+        f"proxy Neff={sel['proxy_neff']:,.1f})",
+        verbose=True,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1061,7 +1115,7 @@ def parse_args() -> argparse.Namespace:
         "--selection-batch-size",
         type=int,
         default=100_000,
-        help="Maximum number of proposed GW-selection injections to draw in one JAX batch.",
+        help="Maximum number of proposed GW-selection injections to draw in one vectorized NumPy batch.",
     )
     selection_target = parser.add_mutually_exclusive_group()
     selection_target.add_argument(
