@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 # Generate a realistic low-redshift mock dark-sirens data set and verify that
 # the inference data loaders can ingest it. Set RUN_INFERENCE=1 to launch a
 # small dark-sirens sampler run using survey hyperparameters matched to the
 # generated catalog.
-set -euo pipefail
+set -eu
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 OUTDIR="${OUTDIR:-${ROOT_DIR}/data/mock_dark_sirens_test}"
 SEED="${SEED:-1234}"
 
@@ -39,6 +39,25 @@ FIXED_SURVEY_JSON="${FIXED_SURVEY_JSON:-{\"log10n0\": ${LOG10N0}, \"z50\": ${SUR
 cd "${ROOT_DIR}"
 mkdir -p "${OUTDIR}"
 
+cat <<EOF
+Starting verbose mock data test.
+  ROOT_DIR=${ROOT_DIR}
+  OUTDIR=${OUTDIR}
+  SEED=${SEED}
+  N0=${N0}
+  ZMAX=${ZMAX}
+  SURVEY_Z50=${SURVEY_Z50}
+  SURVEY_WIDTH=${SURVEY_WIDTH}
+  GALAXY_DENSITY_DELTA=${GALAXY_DENSITY_DELTA}
+  NSIDE=${NSIDE}
+  NOBS=${NOBS}
+  NSAMP=${NSAMP}
+  NDRAW=${NDRAW}
+  SELECTION_BATCH_SIZE=${SELECTION_BATCH_SIZE}
+  SELECTION_PER_OBSERVATION_FACTOR=${SELECTION_PER_OBSERVATION_FACTOR}
+  RUN_INFERENCE=${RUN_INFERENCE:-0}
+EOF
+
 python scripts/mock_data/generate_mock_data.py \
   --outdir "${OUTDIR}" \
   --seed "${SEED}" \
@@ -57,9 +76,11 @@ python scripts/mock_data/generate_mock_data.py \
   --m2det-fractional-uncertainty "${M2DET_FRAC_UNCERTAINTY}" \
   --chieff-uncertainty "${CHIEFF_UNCERTAINTY}" \
   --sky-uncertainty-deg "${SKY_UNCERTAINTY_DEG}" \
-  --nside "${NSIDE}"
+  --nside "${NSIDE}" \
+  --verbose
 
 export OUTDIR NSIDE NOBS NSAMP
+echo "Starting verbose ingestion smoke test for generated products."
 python - <<'PY'
 from argparse import Namespace
 from pathlib import Path
@@ -91,7 +112,8 @@ assert np.isfinite(np.asarray(data["p_draw"])).all(), "non-finite p_draw values"
 print("Ingestion smoke test passed.")
 PY
 
-if [[ "${RUN_INFERENCE:-0}" == "1" ]]; then
+if [ "${RUN_INFERENCE:-0}" = "1" ]; then
+  echo "Starting optional darksirens_inference sampler smoke test."
   python -m darksirens.tool.darksirens_inference \
     --gw_path "${OUTDIR}/mock_gw_events.h5" \
     --gwselection_path "${OUTDIR}/mock_gw_selection.h5" \

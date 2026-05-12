@@ -8,3 +8,4 @@ healpy
 jaxns
 h5py
 astropy
+tqdm
