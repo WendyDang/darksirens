@@ -453,6 +453,7 @@ def make_likelihood(opts, data: dict, pop_params_fid,
         _n_cosmo_eff,
         _n_survey_eff,
         _model_name,
+        _fixed_parameter_statuses,
     ) = build_parameter_space(
         pop_model,
         opts.fix_population,

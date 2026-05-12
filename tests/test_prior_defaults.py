@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 if "tinygp" not in sys.modules:
     tinygp_stub = types.ModuleType("tinygp")
 
@@ -44,3 +46,36 @@ def test_survey_default_priors_are_physical_and_overridable():
     )
     bounds = {label: (float(lo), float(hi)) for label, lo, hi in zip(labels, lower, upper)}
     assert bounds["log10n0"] == (-6.0, -2.0)
+
+
+def test_fixed_parameter_prior_override_overlap_in_range_is_reported():
+    res = build_parameter_space(
+        "powerlaw+peak",
+        fix_population=True,
+        fix_cosmology=False,
+        fix_survey=True,
+        prior_overrides={"H0": [60.0, 80.0]},
+        fixed_parameter_values={"H0": 67.74},
+    )
+
+    labels, lower, upper = res[0], res[1], res[2]
+    fixed_parameter_statuses = res[10]
+
+    assert "H0" not in labels
+    assert len(labels) == len(lower) == len(upper)
+    assert fixed_parameter_statuses == {"H0": "fixed; override ignored"}
+
+
+def test_fixed_parameter_prior_override_overlap_out_of_range_raises():
+    with pytest.raises(
+        ValueError,
+        match=r"Fixed value for 'H0' \(67\.74\) is outside the overridden prior bounds \[80\.0, 90\.0\]",
+    ):
+        build_parameter_space(
+            "powerlaw+peak",
+            fix_population=True,
+            fix_cosmology=False,
+            fix_survey=True,
+            prior_overrides={"H0": [80.0, 90.0]},
+            fixed_parameter_values={"H0": 67.74},
+        )
