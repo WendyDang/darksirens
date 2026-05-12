@@ -62,7 +62,6 @@ from darksirens.em.completion import build_pixel_kde_cache, completion_clip_diag
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog
 from darksirens.inference.sampling import run_sampler
 from darksirens.inference.prior import build_parameter_space, make_prior_transform
-from darksirens.utils.plotting import make_production_corner
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -913,10 +912,14 @@ def main():
 
     print("  │  Generating corner plot...")
     try:
+        from darksirens.utils.plotting import make_production_corner
+
         fig = make_production_corner(results["samples"], labels)
         corner_path = os.path.join(run_dir, "corner.pdf")
         fig.savefig(corner_path, bbox_inches="tight", dpi=200)
         _ok(f"corner.pdf     →  {corner_path}")
+    except ModuleNotFoundError as e:
+        _warn(f"Corner plot skipped; optional plotting dependency is missing: {e.name}")
     except Exception as e:
         _warn(f"Corner plot failed: {e}")
 

@@ -4,6 +4,9 @@ __minimum_jax_version__ = '0.4.34'
 
 setup_requires = ['jax>=' + __minimum_jax_version__]
 
+with open("requirements.txt", "r") as fh:
+    install_requires = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+
 with open("README.md", "r") as fh:
     long_description = fh.read()    
     
@@ -17,6 +20,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/ignaciomagana/darksirens",
     setup_requires=setup_requires,
+    install_requires=install_requires,
 
     packages=find_packages(include=["darksirens", "darksirens.*"]),
     entry_points={
