@@ -120,7 +120,7 @@ def validate_population_config_against_registry(pop: PopulationConfig | None = N
 class SurveyConfig:
     """Simple EM selection model for catalog incompleteness."""
 
-    n0: float = 1.0e-2
+    n0: float = 1.0e-3
     delta: float = 0.0
     footprint_dec_min_deg: float = -40.0
     footprint_dec_max_deg: float = 80.0
@@ -132,6 +132,31 @@ class SurveyConfig:
     absolute_mag_sigma: float = 1.0
     redshift_error_floor: float = 0.0005
     redshift_error_slope: float = 0.0015
+
+
+@dataclass(frozen=True)
+class PEUncertaintyConfig:
+    """Simple Gaussian/lognormal widths used to generate mock GW PE samples.
+
+    Fractional values are one-sigma widths relative to the event truth.  Set a
+    value to ``None`` to use the legacy SNR-scaled heuristic for that field.
+    ``chieff_sigma`` and ``sky_sigma_deg`` are absolute one-sigma widths.
+    """
+
+    dL_fractional: float | None = None
+    m1det_fractional: float = 0.08
+    m2det_fractional: float = 0.10
+    chieff_sigma: float = 0.08
+    sky_sigma_deg: float | None = None
+
+
+SURVEY_PRIOR_BOUNDS = {
+    # Keep these in sync with darksirens.inference.prior.build_parameter_space.
+    "log10n0": (-4.0, -1.0),
+    "z50": (0.05, 4.5),
+    "w": (0.02, 1.5),
+    "delta": (-3.0, 3.0),
+}
 
 
 def _build_cosmology(h0: float, om0: float) -> FlatLambdaCDM:
@@ -155,6 +180,25 @@ def _expected_complete_catalog_count(n0: float, delta: float, grids: dict[str, n
     z = grids["z"]
     dndz = n0 * grids["dvc_dz"] * (1.0 + z) ** delta
     return float(trapezoid(dndz, z))
+
+
+def _check_prior_bound(name: str, value: float) -> None:
+    lo, hi = SURVEY_PRIOR_BOUNDS[name]
+    if not (lo <= value <= hi):
+        raise ValueError(
+            f"Generated survey parameter {name}={value:g} is outside the "
+            f"default inference prior bounds [{lo:g}, {hi:g}]. Pass values "
+            "inside the bounds or update the inference prior explicitly."
+        )
+
+
+def validate_survey_config_against_default_priors(survey: SurveyConfig) -> None:
+    """Ensure generated survey hyperparameters are inside inference priors."""
+
+    _check_prior_bound("log10n0", float(np.log10(survey.n0)))
+    _check_prior_bound("z50", float(survey.z50))
+    _check_prior_bound("w", float(survey.width))
+    _check_prior_bound("delta", float(survey.delta))
 
 
 def _sample_uniform_comoving_z(rng: np.random.Generator, grids: dict[str, np.ndarray], n: int) -> np.ndarray:
@@ -331,23 +375,40 @@ def _draw_events_until_detected(
     return out
 
 
-def _posterior_samples(rng: np.random.Generator, truth: dict[str, np.ndarray], nsamp: int) -> dict[str, np.ndarray]:
+def _posterior_samples(
+    rng: np.random.Generator,
+    truth: dict[str, np.ndarray],
+    nsamp: int,
+    pe_uncertainty: PEUncertaintyConfig,
+) -> dict[str, np.ndarray]:
     nobs = len(truth["z"])
     arrays = {"ra": [], "dec": [], "dL": [], "m1det": [], "m2det": [], "chieff": [], "p_pe": []}
     for i in range(nobs):
         rho = truth["snr"][i]
-        frac_dl = np.clip(1.8 / rho, 0.08, 0.35)
+        frac_dl = (
+            float(np.clip(1.8 / rho, 0.08, 0.35))
+            if pe_uncertainty.dL_fractional is None
+            else pe_uncertainty.dL_fractional
+        )
         dl = rng.lognormal(np.log(truth["dl"][i]) - 0.5 * frac_dl**2, frac_dl, nsamp)
-        sigma_ang = np.deg2rad(np.clip(35.0 / rho, 1.0, 12.0))
+        sigma_ang = np.deg2rad(
+            float(np.clip(35.0 / rho, 1.0, 12.0))
+            if pe_uncertainty.sky_sigma_deg is None
+            else pe_uncertainty.sky_sigma_deg
+        )
         dra = rng.normal(0.0, sigma_ang / max(np.cos(truth["dec"][i]), 0.1), nsamp)
         ddec = rng.normal(0.0, sigma_ang, nsamp)
         arrays["ra"].append((truth["ra"][i] + dra) % (2.0 * np.pi))
         arrays["dec"].append(np.clip(truth["dec"][i] + ddec, -0.5 * np.pi, 0.5 * np.pi))
         m1det = truth["m1"][i] * (1.0 + truth["z"][i])
         m2det = truth["m2"][i] * (1.0 + truth["z"][i])
-        arrays["m1det"].append(np.clip(rng.normal(m1det, 0.08 * m1det, nsamp), 2.0, None))
-        arrays["m2det"].append(np.clip(rng.normal(m2det, 0.10 * m2det, nsamp), 1.0, None))
-        arrays["chieff"].append(np.clip(rng.normal(truth["chi"][i], 0.08, nsamp), -1.0, 1.0))
+        arrays["m1det"].append(
+            np.clip(rng.normal(m1det, pe_uncertainty.m1det_fractional * m1det, nsamp), 2.0, None)
+        )
+        arrays["m2det"].append(
+            np.clip(rng.normal(m2det, pe_uncertainty.m2det_fractional * m2det, nsamp), 1.0, None)
+        )
+        arrays["chieff"].append(np.clip(rng.normal(truth["chi"][i], pe_uncertainty.chieff_sigma, nsamp), -1.0, 1.0))
         arrays["dL"].append(dl)
         arrays["p_pe"].append(np.ones(nsamp))
     return {k: np.concatenate(v) for k, v in arrays.items()}
@@ -518,6 +579,16 @@ def write_mock_data(args: argparse.Namespace) -> None:
     survey = SurveyConfig(
         n0=SurveyConfig.n0 if args.n0 is None else args.n0,
         delta=args.galaxy_density_delta,
+        z50=args.survey_z50,
+        width=args.survey_width,
+    )
+    validate_survey_config_against_default_priors(survey)
+    pe_uncertainty = PEUncertaintyConfig(
+        dL_fractional=args.dL_fractional_uncertainty,
+        m1det_fractional=args.m1det_fractional_uncertainty,
+        m2det_fractional=args.m2det_fractional_uncertainty,
+        chieff_sigma=args.chieff_uncertainty,
+        sky_sigma_deg=args.sky_uncertainty_deg,
     )
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
@@ -529,6 +600,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
     if args.n0 is None:
         density_integral = _expected_complete_catalog_count(1.0, survey.delta, grids)
         survey = replace(survey, n0=float(args.n_galaxies) / density_integral)
+        validate_survey_config_against_default_priors(survey)
         expected_complete_count = float(args.n_galaxies)
         realized_complete_count = int(args.n_galaxies)
         complete_count_source = "--n-galaxies"
@@ -556,7 +628,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
     )
 
     truth = _draw_events_until_detected(rng, args.nobs, complete, grids, pop, args.snr_threshold)
-    post = _posterior_samples(rng, truth, args.nsamp)
+    post = _posterior_samples(rng, truth, args.nsamp, pe_uncertainty)
     sel = _selection_injections(
         rng,
         args.ndraw,
@@ -575,6 +647,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
             "raw_mock_parameters": asdict(pop),
         },
         "survey": asdict(survey),
+        "pe_uncertainty": asdict(pe_uncertainty),
         "complete_catalog": {
             "count_source": complete_count_source,
             "n0": survey.n0,
@@ -655,19 +728,55 @@ def parse_args() -> argparse.Namespace:
         "--n-galaxies",
         type=int,
         default=None,
-        help="Complete-catalog galaxy count. Defaults to 50,000 when --n0 is not set; overrides --n0 when set.",
+        help=(
+            "Complete-catalog galaxy count. If --n0 is also omitted, this "
+            "sets n0 from the count and redshift range; overrides the realized "
+            "count when --n0 is set."
+        ),
     )
     parser.add_argument(
         "--n0",
         type=float,
         default=None,
-        help="Comoving galaxy density in galaxies per Mpc^3 used to derive the complete-catalog count.",
+        help=f"Comoving galaxy density in galaxies per Mpc^3. Defaults to {SurveyConfig.n0:g}.",
     )
     parser.add_argument(
         "--galaxy-density-delta",
         type=float,
-        default=0.0,
+        default=SurveyConfig.delta,
         help="Galaxy number-density evolution exponent in n(z) = n0 (1 + z)^delta.",
+    )
+    parser.add_argument("--survey-z50", type=float, default=SurveyConfig.z50, help="Redshift where EM completeness is 50%%.")
+    parser.add_argument("--survey-width", type=float, default=SurveyConfig.width, help="Logistic EM-completeness width in redshift.")
+    parser.add_argument(
+        "--dL-fractional-uncertainty",
+        type=float,
+        default=None,
+        help="Optional fixed one-sigma fractional luminosity-distance PE width; default scales with SNR.",
+    )
+    parser.add_argument(
+        "--m1det-fractional-uncertainty",
+        type=float,
+        default=PEUncertaintyConfig.m1det_fractional,
+        help="One-sigma fractional detector-frame primary-mass PE width.",
+    )
+    parser.add_argument(
+        "--m2det-fractional-uncertainty",
+        type=float,
+        default=PEUncertaintyConfig.m2det_fractional,
+        help="One-sigma fractional detector-frame secondary-mass PE width.",
+    )
+    parser.add_argument(
+        "--chieff-uncertainty",
+        type=float,
+        default=PEUncertaintyConfig.chieff_sigma,
+        help="Absolute one-sigma chi_eff PE width.",
+    )
+    parser.add_argument(
+        "--sky-uncertainty-deg",
+        type=float,
+        default=None,
+        help="Optional fixed one-sigma sky-position PE width in degrees; default scales with SNR.",
     )
     parser.add_argument("--nobs", type=int, default=8)
     parser.add_argument("--nsamp", type=int, default=512)
@@ -692,17 +801,29 @@ def parse_args() -> argparse.Namespace:
         help="Stop selection generation after approximately this factor times --nobs detected injections.",
     )
     parser.add_argument("--nside", type=int, default=16)
-    parser.add_argument("--zmax", type=float, default=1.5)
+    parser.add_argument("--zmax", type=float, default=0.08)
     parser.add_argument("--H0", type=float, default=67.74)
     parser.add_argument("--Om0", type=float, default=0.3075)
     parser.add_argument("--snr-threshold", type=float, default=8.0)
     args = parser.parse_args()
     if args.n_galaxies is None and args.n0 is None:
-        args.n_galaxies = 50_000
+        args.n0 = SurveyConfig.n0
     if args.n_galaxies is not None and args.n_galaxies <= 0:
         parser.error("--n-galaxies must be positive")
     if args.n0 is not None and args.n0 <= 0:
         parser.error("--n0 must be positive")
+    if args.survey_width <= 0:
+        parser.error("--survey-width must be positive")
+    for name in [
+        "dL_fractional_uncertainty",
+        "m1det_fractional_uncertainty",
+        "m2det_fractional_uncertainty",
+        "chieff_uncertainty",
+        "sky_uncertainty_deg",
+    ]:
+        value = getattr(args, name)
+        if value is not None and value <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.selection_batch_size <= 0:
         parser.error("--selection-batch-size must be positive")
     if args.ndraw <= 0:

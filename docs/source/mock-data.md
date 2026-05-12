@@ -11,6 +11,27 @@ Run:
 python scripts/mock_data/generate_mock_data.py --outdir data/mock_dark_sirens
 ```
 
+By default the generator uses a realistic local galaxy-density normalization,
+`--n0 1e-3` Mpc^-3, and a low-redshift generation range, `--zmax 0.08`, so the
+fixture remains lightweight.  The generated survey hyperparameters (`log10n0`,
+`z50`, `w`, and `delta`) are validated against the default inference prior
+bounds before any files are written.
+
+Mock GW posterior widths can be controlled with fractional PE-uncertainty
+arguments, for example:
+
+```bash
+python scripts/mock_data/generate_mock_data.py \
+  --outdir data/mock_dark_sirens \
+  --dL-fractional-uncertainty 0.20 \
+  --m1det-fractional-uncertainty 0.08 \
+  --m2det-fractional-uncertainty 0.10 \
+  --sky-uncertainty-deg 5.0
+```
+
+If `--dL-fractional-uncertainty` or `--sky-uncertainty-deg` is omitted, that
+width falls back to the SNR-scaled heuristic.
+
 The generator writes files that can be consumed directly by `darksirens_inference`:
 
 | File | Purpose |
@@ -38,7 +59,7 @@ Run the default ingestibility smoke test with:
 bash scripts/mock_data/run_mock_data_test.sh
 ```
 
-The script creates a small data set under `data/mock_dark_sirens_test` and calls `darksirens.inference.data.load_all_data` to verify that the generated HDF5 products are readable by the inference pipeline.
+The script creates a small data set under `data/mock_dark_sirens_test` using `N0=1e-3` Mpc^-3 and calls `darksirens.inference.data.load_all_data` to verify that the generated HDF5 products are readable by the inference pipeline.
 
 To also launch a tiny optional sampler run, use:
 
@@ -51,3 +72,6 @@ You can override the mock size without editing the script, for example:
 ```bash
 NOBS=5 NSAMP=256 NDRAW=50000 NSIDE=16 bash scripts/mock_data/run_mock_data_test.sh
 ```
+
+The optional inference run fixes the survey hyperparameters to the generated
+scenario via `--fixed_parameter_values`, including `log10n0 = -3`.
