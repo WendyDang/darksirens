@@ -73,5 +73,11 @@ You can override the mock size without editing the script, for example:
 NOBS=5 NSAMP=256 NDRAW=50000 NSIDE=16 bash scripts/mock_data/run_mock_data_test.sh
 ```
 
+The smoke-test script pins common BLAS/OpenMP thread counts to one and disables
+JAX preallocation unless the caller has already set those environment variables.
+This keeps the small fixture responsive on shared CPU machines and avoids the
+common fork-after-JAX runtime deadlock when a library creates worker processes
+after JAX has initialized its thread pool.
+
 The optional inference run fixes the survey hyperparameters to the generated
 scenario via `--fixed_parameter_values`, including `log10n0 = -3`.

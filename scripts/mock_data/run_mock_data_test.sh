@@ -9,6 +9,17 @@ ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 OUTDIR="${OUTDIR:-${ROOT_DIR}/data/mock_dark_sirens_test}"
 SEED="${SEED:-1234}"
 
+# Keep smoke-test subprocesses deterministic on shared CPU machines and avoid
+# fork-after-JAX deadlocks when libraries create worker processes after JAX has
+# initialized its runtime. Users can still override these before invoking this
+# script.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+export XLA_PYTHON_CLIENT_ALLOCATOR="${XLA_PYTHON_CLIENT_ALLOCATOR:-platform}"
+
 # Survey-generation defaults.  N0=1e-3 Mpc^-3 is intentionally inside the
 # default inference prior log10n0 ∈ [-4, -1].  The low zmax keeps the fixture
 # lightweight while still using a physically meaningful density normalization.
@@ -84,8 +95,14 @@ echo "Starting verbose ingestion smoke test for generated products."
 python - <<'PY'
 from argparse import Namespace
 from pathlib import Path
+import multiprocessing as mp
 import os
 import numpy as np
+
+try:
+    mp.set_start_method("spawn")
+except RuntimeError:
+    pass
 from darksirens.inference.data import load_all_data
 
 out = Path(os.environ["OUTDIR"])
