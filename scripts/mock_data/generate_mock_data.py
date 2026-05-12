@@ -18,6 +18,8 @@ and ``darksirens_pixelate``/``load_survey``.
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import json
 import sys
 from dataclasses import asdict, dataclass, fields, replace
@@ -44,9 +46,82 @@ if str(_REPO_ROOT) not in sys.path:
 
 from darksirens.gw.populations.registry import get_fixed_population_params
 
+_TQDM_SPEC = importlib.util.find_spec("tqdm")
+tqdm = importlib.import_module("tqdm.auto").tqdm if _TQDM_SPEC is not None else None
+
 C_KM_S = 299_792.458
 POPULATION_SOURCE_MODEL = "powerlaw+peak_shared_beta_spin"
 _POPULATION_PARAM_COUNT = 12
+
+
+def _log(message: str, *, verbose: bool = True) -> None:
+    """Print one flushed status line when verbose output is enabled."""
+
+    if verbose:
+        print(message, flush=True)
+
+
+def _progress(iterable, *, verbose: bool, **kwargs):
+    """Wrap an iterable in tqdm when available; otherwise return it unchanged."""
+
+    if verbose and tqdm is not None:
+        return tqdm(iterable, dynamic_ncols=True, **kwargs)
+    return iterable
+
+
+def _progress_available_message() -> str:
+    if tqdm is None:
+        return "tqdm progress bars unavailable (install tqdm); using verbose milestone logs instead."
+    return "tqdm progress bars enabled."
+
+
+def _format_config_value(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _log_section(title: str, *, verbose: bool = True) -> None:
+    _log(f"\n=== {title} ===", verbose=verbose)
+
+
+def _log_mapping(title: str, values: dict[str, object], *, verbose: bool = True) -> None:
+    if not verbose:
+        return
+    _log_section(title, verbose=verbose)
+    width = max((len(key) for key in values), default=0)
+    for key, value in values.items():
+        _log(f"  {key:<{width}} : {_format_config_value(value)}", verbose=verbose)
+
+
+def _progress_update(progress, amount: int = 1) -> None:
+    if progress is not None:
+        progress.update(amount)
+
+
+def _progress_close(progress) -> None:
+    if progress is not None:
+        progress.close()
+
+
+def _progress_set_postfix(progress, **kwargs) -> None:
+    if progress is not None:
+        progress.set_postfix(kwargs, refresh=True)
+
+
+def _new_progress_bar(*, total: int | None, desc: str, unit: str, verbose: bool):
+    if verbose and tqdm is not None:
+        return tqdm(total=total, desc=desc, unit=unit, dynamic_ncols=True)
+    return None
+
+
+def _fallback_progress_log(message: str, *, verbose: bool) -> None:
+    if verbose and tqdm is None:
+        _log(message, verbose=verbose)
+
+
+def _percent(part: int | float, total: int | float) -> float:
+    return 100.0 * float(part) / float(total) if total else 0.0
 
 
 def _population_config_kwargs_from_registry() -> dict[str, float]:
@@ -329,7 +404,16 @@ def _apply_survey_selection(
     return footprint & depth & (rng.uniform(size=len(catalog["z"])) < completeness)
 
 
-def _pixelate_catalog(ra: np.ndarray, dec: np.ndarray, z: np.ndarray, dz: np.ndarray, w: np.ndarray, nside: int) -> dict[str, np.ndarray]:
+def _pixelate_catalog(
+    ra: np.ndarray,
+    dec: np.ndarray,
+    z: np.ndarray,
+    dz: np.ndarray,
+    w: np.ndarray,
+    nside: int,
+    *,
+    verbose: bool = True,
+) -> dict[str, np.ndarray]:
     npix = hp.nside2npix(nside)
     pix = hp.ang2pix(nside, np.pi / 2.0 - dec, ra)
     counts = np.bincount(pix, minlength=npix).astype(np.int32)
@@ -338,7 +422,9 @@ def _pixelate_catalog(ra: np.ndarray, dec: np.ndarray, z: np.ndarray, dz: np.nda
     dzgals = np.full((npix, max_gals), 1.0)
     wgals = np.zeros((npix, max_gals))
     offsets = np.zeros(npix, dtype=np.int32)
-    for i, p in enumerate(pix):
+    _fallback_progress_log(f"Pixelating {len(pix):,} observed galaxies without tqdm progress bar.", verbose=verbose)
+    iterator = _progress(enumerate(pix), total=len(pix), desc="Pixelating observed survey", unit="gal", verbose=verbose)
+    for i, p in iterator:
         j = offsets[p]
         zgals[p, j] = z[i]
         dzgals[p, j] = dz[i]
@@ -354,36 +440,85 @@ def _draw_events_until_detected(
     grids: dict[str, np.ndarray],
     pop: PopulationConfig,
     snr_threshold: float,
+    *,
+    verbose: bool = True,
 ) -> dict[str, np.ndarray]:
     kept: list[dict[str, np.ndarray]] = []
-    while sum(len(x["z"]) for x in kept) < nobs:
-        ntry = max(4 * nobs, 256)
-        host_idx = rng.integers(0, len(catalog["z"]), ntry)
-        z = catalog["z"][host_idx]
-        ra = catalog["ra"][host_idx]
-        dec = catalog["dec"][host_idx]
-        dl = _interp_dl(z, grids)
-        m1 = _sample_powerlaw_peak_m1(rng, ntry, pop)
-        q = _sample_q(rng, m1, pop)
-        m2 = q * m1
-        chi = _sample_chieff(rng, ntry, pop)
-        snr = _network_snr(m1, m2, z, dl, rng)
-        det = snr >= snr_threshold
-        if np.any(det):
-            kept.append({k: v[det] for k, v in dict(z=z, ra=ra, dec=dec, dl=dl, m1=m1, m2=m2, q=q, chi=chi, snr=snr).items()})
-    out = {k: np.concatenate([x[k] for x in kept])[:nobs] for k in kept[0]}
-    return out
+    total_proposals = 0
+    total_detected = 0
+    batch_index = 0
+    progress = _new_progress_bar(total=nobs, desc="Drawing detected GW events", unit="event", verbose=verbose)
+    _fallback_progress_log(f"Drawing {nobs:,} detected GW events without tqdm progress bar.", verbose=verbose)
+    try:
+        while sum(len(x["z"]) for x in kept) < nobs:
+            batch_index += 1
+            ntry = max(4 * nobs, 256)
+            host_idx = rng.integers(0, len(catalog["z"]), ntry)
+            z = catalog["z"][host_idx]
+            ra = catalog["ra"][host_idx]
+            dec = catalog["dec"][host_idx]
+            dl = _interp_dl(z, grids)
+            m1 = _sample_powerlaw_peak_m1(rng, ntry, pop)
+            q = _sample_q(rng, m1, pop)
+            m2 = q * m1
+            chi = _sample_chieff(rng, ntry, pop)
+            snr = _network_snr(m1, m2, z, dl, rng)
+            det = snr >= snr_threshold
 
+            proposed_detections = int(det.sum())
+            accepted_before = sum(len(x["z"]) for x in kept)
+            total_proposals += ntry
+            total_detected += proposed_detections
+
+            if proposed_detections:
+                kept.append({
+                    k: v[det]
+                    for k, v in dict(z=z, ra=ra, dec=dec, dl=dl, m1=m1, m2=m2, q=q, chi=chi, snr=snr).items()
+                })
+
+            accepted_after = min(sum(len(x["z"]) for x in kept), nobs)
+            _progress_update(progress, accepted_after - min(accepted_before, nobs))
+            _progress_set_postfix(
+                progress,
+                batches=batch_index,
+                proposals=f"{total_proposals:,}",
+                det=f"{total_detected:,}",
+                rate=f"{_percent(total_detected, total_proposals):.2f}%",
+            )
+            _fallback_progress_log(
+                "  GW event draw batch "
+                f"{batch_index}: proposed {ntry:,}, detected {proposed_detections:,}, "
+                f"accepted {accepted_after:,}/{nobs:,} "
+                f"(cumulative detection rate {_percent(total_detected, total_proposals):.2f}%).",
+                verbose=verbose,
+            )
+    finally:
+        _progress_close(progress)
+
+    out = {k: np.concatenate([x[k] for x in kept])[:nobs] for k in kept[0]}
+    _log(
+        f"Detected GW event truth set complete: {nobs:,} events after {total_proposals:,} proposals "
+        f"({total_detected:,} proposals passed SNR threshold; {_percent(total_detected, total_proposals):.2f}% raw detection rate).",
+        verbose=verbose,
+    )
+    return out
 
 def _posterior_samples(
     rng: np.random.Generator,
     truth: dict[str, np.ndarray],
     nsamp: int,
     pe_uncertainty: PEUncertaintyConfig,
+    *,
+    verbose: bool = True,
 ) -> dict[str, np.ndarray]:
     nobs = len(truth["z"])
     arrays = {"ra": [], "dec": [], "dL": [], "m1det": [], "m2det": [], "chieff": [], "p_pe": []}
-    for i in range(nobs):
+    _fallback_progress_log(
+        f"Generating posterior samples for {nobs:,} events x {nsamp:,} samples without tqdm progress bar.",
+        verbose=verbose,
+    )
+    iterator = _progress(range(nobs), total=nobs, desc="Generating GW posterior samples", unit="event", verbose=verbose)
+    for i in iterator:
         rho = truth["snr"][i]
         frac_dl = (
             float(np.clip(1.8 / rho, 0.08, 0.35))
@@ -411,6 +546,13 @@ def _posterior_samples(
         arrays["chieff"].append(np.clip(rng.normal(truth["chi"][i], pe_uncertainty.chieff_sigma, nsamp), -1.0, 1.0))
         arrays["dL"].append(dl)
         arrays["p_pe"].append(np.ones(nsamp))
+        if tqdm is None:
+            _fallback_progress_log(
+                f"  Posterior event {i + 1:,}/{nobs:,}: SNR={rho:.2f}, "
+                f"dL fractional sigma={frac_dl:.3f}, samples={nsamp:,}.",
+                verbose=verbose,
+            )
+    _log(f"Generated {nobs * nsamp:,} total GW posterior samples.", verbose=verbose)
     return {k: np.concatenate(v) for k, v in arrays.items()}
 
 
@@ -422,6 +564,8 @@ def _selection_injections(
     snr_threshold: float,
     batch_size: int,
     target_detections: int | None = None,
+    *,
+    verbose: bool = True,
 ) -> dict[str, np.ndarray | int]:
     if batch_size <= 0:
         raise ValueError("selection batch size must be positive")
@@ -539,28 +683,76 @@ def _selection_injections(
     total_draws = 0
     n_detected = 0
 
-    while total_draws < ndraw and (target_detections is None or n_detected < target_detections):
-        n_batch = min(batch_size, ndraw - total_draws)
-        key, subkey = jrandom.split(key)
-        batch = batch_draw(subkey, n_batch)
-        total_draws += n_batch
+    draw_progress = _new_progress_bar(total=ndraw, desc="Drawing GW selection injections", unit="draw", verbose=verbose)
+    detection_progress = _new_progress_bar(
+        total=target_detections,
+        desc="Collecting detected injections",
+        unit="det",
+        verbose=verbose and target_detections is not None,
+    )
+    _fallback_progress_log(
+        f"Drawing up to {ndraw:,} GW selection injections in batches of {batch_size:,} without tqdm progress bar.",
+        verbose=verbose,
+    )
+    batch_index = 0
+    try:
+        while total_draws < ndraw and (target_detections is None or n_detected < target_detections):
+            batch_index += 1
+            n_batch = min(batch_size, ndraw - total_draws)
+            key, subkey = jrandom.split(key)
+            batch = batch_draw(subkey, n_batch)
+            total_draws += n_batch
+            _progress_update(draw_progress, n_batch)
 
-        det = np.asarray(batch["det"])
-        if not np.any(det):
-            continue
+            det = np.asarray(batch["det"])
+            detected_in_batch = int(det.sum())
+            kept_count = 0
+            if np.any(det):
+                keep = det
+                if target_detections is not None:
+                    remaining = target_detections - n_detected
+                    if detected_in_batch > remaining:
+                        idx = np.flatnonzero(det)[:remaining]
+                        keep = np.zeros_like(det, dtype=bool)
+                        keep[idx] = True
 
-        keep = det
-        if target_detections is not None:
-            remaining = target_detections - n_detected
-            if int(det.sum()) > remaining:
-                idx = np.flatnonzero(det)[:remaining]
-                keep = np.zeros_like(det, dtype=bool)
-                keep[idx] = True
+                kept_count = int(keep.sum())
+                for name in detected:
+                    detected[name].append(np.asarray(batch[name][keep]))
+                n_detected += kept_count
+                _progress_update(detection_progress, kept_count)
 
-        kept_count = int(keep.sum())
-        for name in detected:
-            detected[name].append(np.asarray(batch[name][keep]))
-        n_detected += kept_count
+            rate = _percent(n_detected, total_draws)
+            _progress_set_postfix(
+                draw_progress,
+                batches=batch_index,
+                kept=f"{n_detected:,}",
+                batch_det=f"{detected_in_batch:,}",
+                rate=f"{rate:.2f}%",
+            )
+            _progress_set_postfix(
+                detection_progress,
+                draws=f"{total_draws:,}",
+                rate=f"{rate:.2f}%",
+            )
+            _fallback_progress_log(
+                "  Selection batch "
+                f"{batch_index}: drew {n_batch:,} ({total_draws:,}/{ndraw:,}), "
+                f"detected {detected_in_batch:,}, kept {kept_count:,}, "
+                f"cumulative kept {n_detected:,}"
+                + (f"/{target_detections:,}" if target_detections is not None else "")
+                + f" ({rate:.2f}% kept/drawn).",
+                verbose=verbose,
+            )
+    finally:
+        _progress_close(draw_progress)
+        _progress_close(detection_progress)
+
+    _log(
+        f"Selection injection generation complete: kept {n_detected:,} detected injections from {total_draws:,} draws "
+        f"({_percent(n_detected, total_draws):.2f}% kept/drawn).",
+        verbose=verbose,
+    )
 
     return {
         **{
@@ -573,6 +765,9 @@ def _selection_injections(
 
 
 def write_mock_data(args: argparse.Namespace) -> None:
+    verbose = bool(args.verbose)
+    _log_section("Mock dark-sirens data generation starting", verbose=verbose)
+    _log(_progress_available_message(), verbose=verbose)
     rng = np.random.default_rng(args.seed)
     pop = PopulationConfig()
     validate_population_config_against_registry(pop)
@@ -593,9 +788,36 @@ def write_mock_data(args: argparse.Namespace) -> None:
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
 
+    _log_mapping(
+        "Requested run configuration",
+        {
+            "outdir": out,
+            "seed": args.seed,
+            "nobs": args.nobs,
+            "nsamp": args.nsamp,
+            "ndraw": args.ndraw,
+            "selection_batch_size": args.selection_batch_size,
+            "selection_target_detections": args.selection_target_detections,
+            "nside": args.nside,
+            "zmax": args.zmax,
+            "snr_threshold": args.snr_threshold,
+        },
+        verbose=verbose,
+    )
+    _log_mapping("Survey configuration", asdict(survey), verbose=verbose)
+    _log_mapping("Population configuration", asdict(pop), verbose=verbose)
+    _log_mapping("PE uncertainty configuration", asdict(pe_uncertainty), verbose=verbose)
+
     cosmo = _build_cosmology(args.H0, args.Om0)
     zmax = float(args.zmax)
+    _log_section("Building cosmology lookup grids", verbose=verbose)
+    _log(f"Computing 20,000-point z/dL/dVc grid over 0 <= z <= {zmax:g}.", verbose=verbose)
     grids = _cosmology_grids(cosmo, zmax)
+    _log(
+        f"Cosmology grid ready: dL(zmax)={grids['dl'][-1]:.3f} Mpc, "
+        f"comoving-volume CDF endpoints=({grids['vc_cdf'][0]:.3g}, {grids['vc_cdf'][-1]:.3g}).",
+        verbose=verbose,
+    )
 
     if args.n0 is None:
         density_integral = _expected_complete_catalog_count(1.0, survey.delta, grids)
@@ -619,16 +841,47 @@ def write_mock_data(args: argparse.Namespace) -> None:
             f"got {realized_complete_count} from {complete_count_source}."
         )
 
+    _log_section("Generating galaxy catalogs", verbose=verbose)
+    _log(
+        f"Complete catalog target: {realized_complete_count:,} galaxies from {complete_count_source}; "
+        f"Poisson expectation {expected_complete_count:,.2f}.",
+        verbose=verbose,
+    )
     complete = _generate_complete_catalog(rng, realized_complete_count, grids, survey)
+    _log(
+        f"Complete catalog generated: z range [{complete['z'].min():.5f}, {complete['z'].max():.5f}], "
+        f"apparent magnitude range [{complete['app_mag'].min():.2f}, {complete['app_mag'].max():.2f}].",
+        verbose=verbose,
+    )
+    _log("Applying EM survey footprint, depth, and logistic completeness selection.", verbose=verbose)
     observed = _apply_survey_selection(rng, complete, survey)
+    _log(
+        f"Observed survey retained {int(observed.sum()):,}/{realized_complete_count:,} galaxies "
+        f"({_percent(int(observed.sum()), realized_complete_count):.2f}%).",
+        verbose=verbose,
+    )
     zerr = survey.redshift_error_floor + survey.redshift_error_slope * (1.0 + complete["z"])
     weights = np.ones(observed.sum())
     pixelated = _pixelate_catalog(
-        complete["ra"][observed], complete["dec"][observed], complete["z"][observed], zerr[observed], weights, args.nside
+        complete["ra"][observed],
+        complete["dec"][observed],
+        complete["z"][observed],
+        zerr[observed],
+        weights,
+        args.nside,
+        verbose=verbose,
+    )
+    _log(
+        f"Pixelated survey ready: nside={args.nside}, npix={len(pixelated['ngals']):,}, "
+        f"max galaxies/pixel={pixelated['zgals'].shape[1]:,}.",
+        verbose=verbose,
     )
 
-    truth = _draw_events_until_detected(rng, args.nobs, complete, grids, pop, args.snr_threshold)
-    post = _posterior_samples(rng, truth, args.nsamp, pe_uncertainty)
+    _log_section("Generating GW event truth and posterior samples", verbose=verbose)
+    truth = _draw_events_until_detected(rng, args.nobs, complete, grids, pop, args.snr_threshold, verbose=verbose)
+    post = _posterior_samples(rng, truth, args.nsamp, pe_uncertainty, verbose=verbose)
+
+    _log_section("Generating GW selection injections", verbose=verbose)
     sel = _selection_injections(
         rng,
         args.ndraw,
@@ -637,6 +890,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
         args.snr_threshold,
         args.selection_batch_size,
         args.selection_target_detections,
+        verbose=verbose,
     )
 
     metadata = {
@@ -659,7 +913,10 @@ def write_mock_data(args: argparse.Namespace) -> None:
         "pop_model_for_inference": POPULATION_SOURCE_MODEL,
     }
 
+    _log_section("Writing HDF5 products", verbose=verbose)
+
     complete_path = out / "mock_galaxy_catalog_complete.h5"
+    _log(f"Writing complete catalog: {complete_path}", verbose=verbose)
     with h5py.File(complete_path, "w") as f:
         f.attrs["mock_data"] = True
         f.attrs["description"] = "Complete isotropic, uniform-in-comoving-volume mock galaxy catalog before EM incompleteness."
@@ -668,6 +925,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
             f.create_dataset(key, data=val, compression="gzip", shuffle=True)
 
     raw_path = out / "mock_survey_raw.h5"
+    _log(f"Writing observed raw survey: {raw_path}", verbose=verbose)
     with h5py.File(raw_path, "w") as f:
         f.attrs["mock_data"] = True
         f.attrs["description"] = "Observed mock survey after footprint, magnitude, redshift, and completeness cuts."
@@ -679,6 +937,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
         f.create_dataset("WEIGHT", data=weights, compression="gzip", shuffle=True)
 
     pixel_path = out / f"catalog_pixelated_nside_{args.nside}.h5"
+    _log(f"Writing pixelated survey: {pixel_path}", verbose=verbose)
     with h5py.File(pixel_path, "w") as f:
         f.attrs["nside"] = int(args.nside)
         f.attrs["mock_data"] = True
@@ -687,6 +946,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
             f.create_dataset(key, data=val, compression="gzip", shuffle=True)
 
     gw_path = out / "mock_gw_events.h5"
+    _log(f"Writing GW posterior samples: {gw_path}", verbose=verbose)
     with h5py.File(gw_path, "w") as f:
         f.attrs["mock_data"] = True
         f.attrs["nobs"] = int(args.nobs)
@@ -700,6 +960,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
             truth_group.create_dataset(key, data=val)
 
     sel_path = out / "mock_gw_selection.h5"
+    _log(f"Writing GW selection injections: {sel_path}", verbose=verbose)
     with h5py.File(sel_path, "w") as f:
         f.attrs["mock_data"] = True
         f.attrs["Ndraw"] = int(sel["Ndraw"])
@@ -708,16 +969,17 @@ def write_mock_data(args: argparse.Namespace) -> None:
         for key in ["m1detsels", "m2detsels", "dLsels", "chieffsels", "rasels", "decsels", "p_draw"]:
             f.create_dataset(key, data=sel[key], compression="gzip", shuffle=True)
 
-    print("Mock dark-sirens data written:")
-    print(
+    _log_section("Mock dark-sirens data written", verbose=verbose)
+    _log(
         f"  complete catalog : {complete_path} "
         f"({realized_complete_count:,} galaxies from {complete_count_source}; "
-        f"expected {expected_complete_count:,.2f})"
+        f"expected {expected_complete_count:,.2f})",
+        verbose=True,
     )
-    print(f"  observed survey  : {raw_path} ({observed.sum():,} galaxies retained)")
-    print(f"  pixelated survey : {pixel_path} (nside={args.nside})")
-    print(f"  GW posteriors    : {gw_path} ({args.nobs} events x {args.nsamp} samples)")
-    print(f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{sel['Ndraw']:,} detected injections)")
+    _log(f"  observed survey  : {raw_path} ({observed.sum():,} galaxies retained)", verbose=True)
+    _log(f"  pixelated survey : {pixel_path} (nside={args.nside})", verbose=True)
+    _log(f"  GW posteriors    : {gw_path} ({args.nobs} events x {args.nsamp} samples)", verbose=True)
+    _log(f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{sel['Ndraw']:,} detected injections)", verbose=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -805,6 +1067,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--H0", type=float, default=67.74)
     parser.add_argument("--Om0", type=float, default=0.3075)
     parser.add_argument("--snr-threshold", type=float, default=8.0)
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=True,
+        help="Print detailed stage-by-stage logs and tqdm progress bars when tqdm is installed (default).",
+    )
+    verbosity.add_argument(
+        "--quiet",
+        dest="verbose",
+        action="store_false",
+        help="Suppress detailed progress logs; final product summary is still printed.",
+    )
     args = parser.parse_args()
     if args.n_galaxies is None and args.n0 is None:
         args.n0 = SurveyConfig.n0
