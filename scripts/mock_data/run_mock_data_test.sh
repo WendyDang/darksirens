@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUTDIR="${OUTDIR:-${ROOT_DIR}/data/mock_dark_sirens_test}"
 NSIDE="${NSIDE:-8}"
-N_GALAXIES="${N_GALAXIES:-12000}"
+N0="${N0:-3.177031162948949e-8}"
 NOBS="${NOBS:-3}"
 NSAMP="${NSAMP:-128}"
 NDRAW="${NDRAW:-50000}"
@@ -21,7 +21,7 @@ mkdir -p "${OUTDIR}"
 python scripts/mock_data/generate_mock_data.py \
   --outdir "${OUTDIR}" \
   --seed "${SEED}" \
-  --n-galaxies "${N_GALAXIES}" \
+  --n0 "${N0}" \
   --nobs "${NOBS}" \
   --nsamp "${NSAMP}" \
   --ndraw "${NDRAW}" \
