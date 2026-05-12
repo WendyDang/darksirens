@@ -177,50 +177,64 @@ def _print_parameter_table(
     pop_fid_map = {lbl: float(pop_params_fid[i])
                    for i, lbl in enumerate(pop_labels_all)}
 
-    block_fixed: dict[str, float] = {}
-    if fix_cosmology:  block_fixed.update(COSMO_FID)
-    if fix_population: block_fixed.update(pop_fid_map)
-    if fix_survey:     block_fixed.update(SURVEY_FID)
+    block_fixed_sections: list[tuple[str, dict[str, float]]] = []
+    if fix_cosmology:
+        block_fixed_sections.append(("cosmology", COSMO_FID))
+    if fix_population:
+        block_fixed_sections.append(("population", pop_fid_map))
+    if fix_survey:
+        block_fixed_sections.append(("survey", SURVEY_FID))
 
     _section("Parameter Space")
+
+    _row("Sampled parameters", "")
     _row("Parameter", f"{'Lower':>12}  {'Upper':>12}  Status", width=24)
     _row("─" * 24,    f"{'─' * 12}  {'─' * 12}  {'─' * 20}", width=24)
-
-    shown = set()
     for label, lo, hi in zip(labels, lower_bound, upper_bound):
-        shown.add(label)
-        if label in fixed_parameter_values:
-            val  = fixed_parameter_values[label]
-            note = fixed_parameter_statuses.get(label, f"fixed = {val:.6g}")
-        elif label in block_fixed:
-            note = f"fixed = {block_fixed[label]:.6g}  (block)"
-        else:
-            note = "← overridden" if label in prior_overrides else ""
+        note = "← overridden" if label in prior_overrides else ""
         print(f"  │    {label:<24} {lo:>12.4g}  {hi:>12.4g}  {note}")
 
-    for label, value in fixed_parameter_values.items():
-        if label in shown:
-            continue
-        if label in prior_overrides:
-            lo, hi = prior_overrides[label]
+    _row("─" * 24, f"{'─' * 12}  {'─' * 12}  {'─' * 20}", width=24)
+    _row("Individually fixed parameters", "")
+    if fixed_parameter_values:
+        for label, value in fixed_parameter_values.items():
             note = fixed_parameter_statuses.get(label, f"fixed = {value:.6g}")
-            print(f"  │    {label:<24} {float(lo):>12.4g}  {float(hi):>12.4g}  {note}")
-        else:
-            print(f"  │    {label:<24} {'—':>12}  {'—':>12}  fixed = {value:.6g}")
+            if label in prior_overrides:
+                lo, hi = prior_overrides[label]
+                print(
+                    f"  │    {label:<24} {float(lo):>12.4g}  "
+                    f"{float(hi):>12.4g}  {note}"
+                )
+            else:
+                print(f"  │    {label:<24} {'—':>12}  {'—':>12}  {note}")
+    else:
+        print(f"  │    {'(none)':<24}")
+
+    _row("─" * 24, f"{'─' * 12}  {'─' * 12}  {'─' * 20}", width=24)
+    _row("Block-fixed parameters", "")
+    if block_fixed_sections:
+        for block_name, fiducials in block_fixed_sections:
+            print(f"  │    [{block_name}]")
+            for label, value in fiducials.items():
+                print(
+                    f"  │    {label:<24} {'—':>12}  {'—':>12}  "
+                    f"fixed = {value:.6g}  (block)"
+                )
+    else:
+        print(f"  │    {'(none)':<24}")
 
     _row("─" * 24, f"{'─' * 12}  {'─' * 12}  {'─' * 20}", width=24)
 
     n_free = sum(1 for lo, hi in zip(lower_bound, upper_bound) if lo != hi)
     n_fix_ind   = len(fixed_parameter_values)
-    n_fix_block = (2 if fix_cosmology else 0
-                   + len(pop_labels_all) if fix_population else 0
-                   + 6 if fix_survey else 0)
+    n_fix_block = ((2 if fix_cosmology else 0)
+                   + (len(pop_labels_all) if fix_population else 0)
+                   + (6 if fix_survey else 0))
     _row("Free (sampled)",      n_free)
     if n_fix_ind:   _row("Fixed individually", n_fix_ind)
     if n_fix_block: _row("Fixed (block)",      n_fix_block)
     _row("Total in coord vec",  len(labels))
     _end()
-
 
 # ── Data saving ────────────────────────────────────────────────────────────────
 
