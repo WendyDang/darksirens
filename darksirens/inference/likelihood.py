@@ -28,7 +28,7 @@ from jax.scipy.special import logsumexp
 import numpy as np
 import warnings
 
-from darksirens.gw.populations import pop_model_parser, pop_model_prior_parser
+from darksirens.gw.populations import pop_model_parser
 from darksirens.em import get_redshift_prior
 from darksirens.em.completion import build_pixel_kde_cache
 from darksirens.inference.utils import log_sample_weight
@@ -36,6 +36,7 @@ from darksirens.inference.events import pad_gw_event_to_multiple
 from darksirens.utils.cosmology import dL_in_z_grid
 from darksirens.utils.utils import logdiffexp
 from darksirens.inference.selection import compute_selection_term, selection_log_correction
+from darksirens.inference.prior import build_parameter_space, resolve_parameter_values
 from darksirens.utils.containers import CosmoParams, SurveyParams, EMCatalog, GWEvent
 
 from astropy.cosmology import Planck15
@@ -439,69 +440,53 @@ def make_likelihood(opts, data: dict, pop_params_fid,
     pixels_sel = sample_to_unique_sel
     q_sel      = _barrier(m2det_sel / m1det_sel)
 
-    # Parameter space.
-    _, _, pop_labels, _ = pop_model_prior_parser(pop_model)
-    cosmo_labels  = ["H0", "Om0"]
-    survey_labels = ["log10n0", "z50", "w", "delta", "b_miss", "alpha_miss"]
+    # Parameter space.  Use build_parameter_space as the single ordering oracle:
+    # labels listed there are sampled coordinates; fixed_parameter_values are not.
+    (
+        sampled_labels,
+        _lower,
+        _upper,
+        _n_pop_eff,
+        pop_labels,
+        survey_labels,
+        _cosmo_labels,
+        _n_cosmo_eff,
+        _n_survey_eff,
+        _model_name,
+    ) = build_parameter_space(
+        pop_model,
+        opts.fix_population,
+        opts.fix_cosmology,
+        opts.fix_survey,
+        prior_overrides=getattr(opts, "prior_overrides", None),
+        fixed_parameter_values=fixed_parameter_values,
+    )
     pop_params_fid_list = [float(v) for v in pop_params_fid]
-
-    sampled_labels = []
-    if not opts.fix_cosmology:  sampled_labels += cosmo_labels
-    if not opts.fix_population: sampled_labels += pop_labels
-    if not opts.fix_survey:     sampled_labels += survey_labels
-
-    fixed_in_coord = {
-        k: float(v) for k, v in fixed_parameter_values.items()
-        if k in set(sampled_labels)
+    fixed_parameter_values = {
+        label: float(value) for label, value in fixed_parameter_values.items()
     }
 
     def likelihood(coord: jnp.ndarray) -> jnp.ndarray:
         coord = jnp.asarray(coord)
-
-        values = {}
-        offset = 0
-        for label in sampled_labels:
-            if label in fixed_in_coord:
-                values[label] = fixed_in_coord[label]
-                continue
-            if offset >= coord.shape[0]:
-                raise ValueError(
-                    f"Too few coordinates: needed '{label}' at index {offset}, "
-                    f"got {coord.shape[0]}."
-                )
-            values[label] = coord[offset]
-            offset += 1
-
-        if offset != coord.shape[0]:
-            raise ValueError(
-                f"Coordinate mismatch: consumed {offset}, got {coord.shape[0]}."
-            )
+        values = resolve_parameter_values(
+            coord, sampled_labels, fixed_parameter_values
+        )
 
         def _get(label, default):
-            if label in values:                  return values[label]
-            if label in fixed_parameter_values:  return fixed_parameter_values[label]
-            return default
+            return values[label] if label in values else default
 
-        if opts.fix_cosmology:
-            H0, Om0 = _get("H0", H0_FID), _get("Om0", OM0_FID)
-        else:
-            H0, Om0 = values["H0"], values["Om0"]
+        H0 = _get("H0", H0_FID)
+        Om0 = _get("Om0", OM0_FID)
 
-        if opts.fix_population:
-            pop_params = jnp.array([
-                _get(label, pop_params_fid_list[i])
-                for i, label in enumerate(pop_labels)
-            ])
-        else:
-            pop_params = jnp.array([values[label] for label in pop_labels])
+        pop_params = jnp.array([
+            _get(label, pop_params_fid_list[i])
+            for i, label in enumerate(pop_labels)
+        ])
 
-        if opts.fix_survey:
-            sp = jnp.array([
-                _get(label, float(SURVEY_PARAMS_FID[i]))
-                for i, label in enumerate(survey_labels)
-            ])
-        else:
-            sp = jnp.array([values[label] for label in survey_labels])
+        sp = jnp.array([
+            _get(label, float(SURVEY_PARAMS_FID[i]))
+            for i, label in enumerate(survey_labels)
+        ])
 
         cosmo  = CosmoParams(H0=H0, Om0=Om0)
         survey = SurveyParams(

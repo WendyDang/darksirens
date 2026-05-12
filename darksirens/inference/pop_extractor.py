@@ -33,9 +33,19 @@ def make_pop_extractor(settings: dict):
     fix_survey             = bool(settings.get("fix_survey",     False))
     fixed_parameter_values = settings.get("fixed_parameter_values") or {}
 
-    # Fast path: entire population block is fixed.
+    # Fast path: entire population block is fixed.  Individual fixed values
+    # still override the fiducial fixed-population vector.
     if fix_population:
         fixed_array = get_fixed_population_params(pop_model_name)
+        _pop_lower, _pop_upper, pop_labels, _model_name = pop_model_prior_parser(
+            pop_model_name
+        )
+        overrides = [
+            float(fixed_parameter_values[label])
+            if label in fixed_parameter_values else fixed_array[idx]
+            for idx, label in enumerate(pop_labels)
+        ]
+        fixed_array = jnp.array(overrides, dtype=fixed_array.dtype)
         def extractor_fixed(theta):
             return fixed_array
         return extractor_fixed
@@ -46,12 +56,16 @@ def make_pop_extractor(settings: dict):
     from darksirens.inference.prior import build_parameter_space
 
     (
-        labels,          # full ordered list of sampled labels
-        *_,
+        labels,          # ordered list of sampled labels
+        _lower,
+        _upper,
+        _n_pop_eff,
         pop_labels,      # population labels in model order
         _survey_labels,
         _cosmo_labels,
-        *__,
+        _n_cosmo_eff,
+        _n_survey_eff,
+        _model_name,
     ) = build_parameter_space(
         pop_model              = pop_model_name,
         fix_population         = fix_population,
