@@ -10,8 +10,10 @@ NSIDE="${NSIDE:-8}"
 N_GALAXIES="${N_GALAXIES:-12000}"
 NOBS="${NOBS:-3}"
 NSAMP="${NSAMP:-128}"
-NDRAW="${NDRAW:-20000}"
+NDRAW="${NDRAW:-50000}"
 SEED="${SEED:-1234}"
+SELECTION_BATCH_SIZE="${SELECTION_BATCH_SIZE:-1000}"
+SELECTION_PER_OBSERVATION_FACTOR="${SELECTION_PER_OBSERVATION_FACTOR:-6}"
 
 cd "${ROOT_DIR}"
 mkdir -p "${OUTDIR}"
@@ -23,6 +25,8 @@ python scripts/mock_data/generate_mock_data.py \
   --nobs "${NOBS}" \
   --nsamp "${NSAMP}" \
   --ndraw "${NDRAW}" \
+  --selection-batch-size "${SELECTION_BATCH_SIZE}" \
+  --selection-per-observation-factor "${SELECTION_PER_OBSERVATION_FACTOR}" \
   --nside "${NSIDE}"
 
 export OUTDIR NSIDE NOBS NSAMP

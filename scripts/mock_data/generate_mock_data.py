@@ -24,6 +24,13 @@ from pathlib import Path
 
 import h5py
 import healpy as hp
+import jax
+
+jax.config.update("jax_enable_x64", True)
+
+import jax.numpy as jnp
+from jax import random as jrandom
+from jax.scipy.special import erf
 import numpy as np
 from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
@@ -282,37 +289,155 @@ def _selection_injections(
     grids: dict[str, np.ndarray],
     pop: PopulationConfig,
     snr_threshold: float,
+    batch_size: int,
+    target_detections: int | None = None,
 ) -> dict[str, np.ndarray | int]:
-    z = _sample_uniform_comoving_z(rng, grids, ndraw)
-    ra, dec = _sample_sky(rng, ndraw)
-    dl = _interp_dl(z, grids)
-    m1 = _sample_powerlaw_peak_m1(rng, ndraw, pop)
-    q = _sample_q(rng, m1, pop)
-    m2 = q * m1
-    chi = _sample_chieff(rng, ndraw, pop)
-    snr = _network_snr(m1, m2, z, dl, rng)
-    det = snr >= snr_threshold
+    if batch_size <= 0:
+        raise ValueError("selection batch size must be positive")
+    if ndraw <= 0:
+        raise ValueError("selection ndraw must be positive")
+    if target_detections is not None and target_detections <= 0:
+        raise ValueError("selection target detections must be positive when provided")
 
-    pz = np.interp(z, grids["z"], grids["dvc_dz"]) / np.trapz(grids["dvc_dz"], grids["z"])
-    ddldz = np.gradient(grids["dl"], grids["z"])
-    # Selection densities are consumed in the likelihood's canonical
-    # coordinates (m1det, q, dL).  Since m1det = (1+z) m1src and
-    # dL = dL(z), the Jacobian from (m1src, q, z) to (m1det, q, dL) is
-    # (1+z) * d(dL)/dz.
-    jac = np.interp(z, grids["z"], ddldz) * (1.0 + z)
-    p_draw = _mass_spin_pdf(m1, q, chi, pop) * pz / np.maximum(jac, 1.0e-300) / (4.0 * np.pi)
-    p_draw = np.maximum(p_draw, 1.0e-300)
+    grid_z = jnp.asarray(grids["z"])
+    grid_vc_cdf = jnp.asarray(grids["vc_cdf"])
+    grid_dl = jnp.asarray(grids["dl"])
+
+    pz_grid = jnp.asarray(grids["dvc_dz"] / np.trapezoid(grids["dvc_dz"], grids["z"]))
+    ddldz_grid = jnp.asarray(np.gradient(grids["dl"], grids["z"]))
+
+    sqrt2 = jnp.sqrt(2.0)
+    chi_norm = pop.chi_sigma * 0.5 * (
+        erf((1.0 - pop.chi_mu) / (sqrt2 * pop.chi_sigma)) - erf((-1.0 - pop.chi_mu) / (sqrt2 * pop.chi_sigma))
+    )
+    peak_norm = pop.peak_sigma * 0.5 * (
+        erf((pop.mmax - pop.peak_mu) / (sqrt2 * pop.peak_sigma))
+        - erf((pop.mmin - pop.peak_mu) / (sqrt2 * pop.peak_sigma))
+    )
+    if np.isclose(pop.alpha, 1.0):
+        pl_norm = jnp.log(pop.mmax / pop.mmin)
+    else:
+        pl_norm = (pop.mmax ** (1.0 - pop.alpha) - pop.mmin ** (1.0 - pop.alpha)) / (1.0 - pop.alpha)
+
+    def powerlaw_sample(u: jax.Array) -> jax.Array:
+        if np.isclose(pop.alpha, 1.0):
+            return pop.mmin * (pop.mmax / pop.mmin) ** u
+        a = 1.0 - pop.alpha
+        return (u * (pop.mmax**a - pop.mmin**a) + pop.mmin**a) ** (1.0 / a)
+
+    def powerlaw_pdf(m: jax.Array) -> jax.Array:
+        val = m ** (-pop.alpha) / pl_norm
+        return jnp.where((m >= pop.mmin) & (m <= pop.mmax), val, 0.0)
+
+    def truncnorm_pdf(x: jax.Array, mu: float, sigma: float, lo: float, hi: float, norm: jax.Array) -> jax.Array:
+        val = jnp.exp(-0.5 * ((x - mu) / sigma) ** 2) / (jnp.sqrt(2.0 * jnp.pi) * norm)
+        return jnp.where((x >= lo) & (x <= hi), val, 0.0)
+
+    def q_sample(u: jax.Array, m1: jax.Array) -> jax.Array:
+        qmin = jnp.clip(pop.mmin / m1, 1.0e-3, 1.0)
+        if np.isclose(pop.beta, -1.0):
+            return qmin * (1.0 / qmin) ** u
+        bp1 = pop.beta + 1.0
+        return (u * (1.0 - qmin**bp1) + qmin**bp1) ** (1.0 / bp1)
+
+    def q_pdf(q: jax.Array, m1: jax.Array) -> jax.Array:
+        qmin = jnp.clip(pop.mmin / m1, 1.0e-3, 1.0)
+        if np.isclose(pop.beta, -1.0):
+            norm = jnp.log(1.0 / qmin)
+        else:
+            norm = (1.0 - qmin ** (pop.beta + 1.0)) / (pop.beta + 1.0)
+        val = q**pop.beta / norm
+        return jnp.where((q >= qmin) & (q <= 1.0), val, 0.0)
+
+    def batch_draw(key: jax.Array, n: int) -> dict[str, jax.Array]:
+        key_z, key_sky, key_peak, key_mix, key_component, key_q, key_chi, key_projection = jrandom.split(key, 8)
+        u_z = jrandom.uniform(key_z, (n,))
+        z = jnp.interp(u_z, grid_vc_cdf, grid_z)
+        dl = jnp.interp(z, grid_z, grid_dl)
+
+        ra_u, sin_dec = jrandom.uniform(key_sky, (2, n))
+        ra = 2.0 * jnp.pi * ra_u
+        dec = jnp.arcsin(2.0 * sin_dec - 1.0)
+
+        m1_pl = powerlaw_sample(jrandom.uniform(key_mix, (n,)))
+        peak_lo = (pop.mmin - pop.peak_mu) / pop.peak_sigma
+        peak_hi = (pop.mmax - pop.peak_mu) / pop.peak_sigma
+        m1_peak = pop.peak_mu + pop.peak_sigma * jrandom.truncated_normal(key_peak, peak_lo, peak_hi, (n,))
+        use_peak = jrandom.uniform(key_component, (n,)) < pop.peak_fraction
+        m1 = jnp.where(use_peak, m1_peak, m1_pl)
+
+        q = q_sample(jrandom.uniform(key_q, (n,)), m1)
+        m2 = q * m1
+        chi_lo = (-1.0 - pop.chi_mu) / pop.chi_sigma
+        chi_hi = (1.0 - pop.chi_mu) / pop.chi_sigma
+        chi = pop.chi_mu + pop.chi_sigma * jrandom.truncated_normal(key_chi, chi_lo, chi_hi, (n,))
+
+        mchirp = (m1 * m2) ** (3.0 / 5.0) / (m1 + m2) ** (1.0 / 5.0)
+        projection = jnp.sqrt(jrandom.beta(key_projection, 2.0, 5.0, (n,)))
+        snr = 11.5 * (mchirp * (1.0 + z) / 30.0) ** (5.0 / 6.0) * (1000.0 / dl) * projection
+        det = snr >= snr_threshold
+
+        pz = jnp.interp(z, grid_z, pz_grid)
+        # Selection densities are consumed in the likelihood's canonical
+        # coordinates (m1det, q, dL).  Since m1det = (1+z) m1src and
+        # dL = dL(z), the Jacobian from (m1src, q, z) to (m1det, q, dL) is
+        # (1+z) * d(dL)/dz.
+        jac = jnp.interp(z, grid_z, ddldz_grid) * (1.0 + z)
+        p_pl = powerlaw_pdf(m1)
+        p_pk = truncnorm_pdf(m1, pop.peak_mu, pop.peak_sigma, pop.mmin, pop.mmax, peak_norm)
+        p_m1 = (1.0 - pop.peak_fraction) * p_pl + pop.peak_fraction * p_pk
+        p_chi = truncnorm_pdf(chi, pop.chi_mu, pop.chi_sigma, -1.0, 1.0, chi_norm)
+        p_draw = p_m1 * q_pdf(q, m1) * p_chi * pz / jnp.maximum(jac, 1.0e-300) / (4.0 * jnp.pi)
+        p_draw = jnp.maximum(p_draw, 1.0e-300)
+
+        return {
+            "m1detsels": m1 * (1.0 + z),
+            "m2detsels": m2 * (1.0 + z),
+            "dLsels": dl,
+            "chieffsels": chi,
+            "rasels": ra,
+            "decsels": dec,
+            "p_draw": p_draw,
+            "det": det,
+        }
+
+    key = jrandom.PRNGKey(int(rng.integers(0, np.iinfo(np.uint32).max, dtype=np.uint32)))
+    detected: dict[str, list[np.ndarray]] = {
+        key: [] for key in ["m1detsels", "m2detsels", "dLsels", "chieffsels", "rasels", "decsels", "p_draw"]
+    }
+    total_draws = 0
+    n_detected = 0
+
+    while total_draws < ndraw and (target_detections is None or n_detected < target_detections):
+        n_batch = min(batch_size, ndraw - total_draws)
+        key, subkey = jrandom.split(key)
+        batch = batch_draw(subkey, n_batch)
+        total_draws += n_batch
+
+        det = np.asarray(batch["det"])
+        if not np.any(det):
+            continue
+
+        keep = det
+        if target_detections is not None:
+            remaining = target_detections - n_detected
+            if int(det.sum()) > remaining:
+                idx = np.flatnonzero(det)[:remaining]
+                keep = np.zeros_like(det, dtype=bool)
+                keep[idx] = True
+
+        kept_count = int(keep.sum())
+        for name in detected:
+            detected[name].append(np.asarray(batch[name][keep]))
+        n_detected += kept_count
 
     return {
-        "m1detsels": m1[det] * (1.0 + z[det]),
-        "m2detsels": m2[det] * (1.0 + z[det]),
-        "dLsels": dl[det],
-        "chieffsels": chi[det],
-        "rasels": ra[det],
-        "decsels": dec[det],
-        "p_draw": p_draw[det],
-        "Ndraw": ndraw,
-        "n_detected": int(det.sum()),
+        **{
+            name: np.concatenate(parts) if parts else np.empty(0, dtype=float)
+            for name, parts in detected.items()
+        },
+        "Ndraw": total_draws,
+        "n_detected": n_detected,
     }
 
 
@@ -337,7 +462,15 @@ def write_mock_data(args: argparse.Namespace) -> None:
 
     truth = _draw_events_until_detected(rng, args.nobs, complete, grids, pop, args.snr_threshold)
     post = _posterior_samples(rng, truth, args.nsamp)
-    sel = _selection_injections(rng, args.ndraw, grids, pop, args.snr_threshold)
+    sel = _selection_injections(
+        rng,
+        args.ndraw,
+        grids,
+        pop,
+        args.snr_threshold,
+        args.selection_batch_size,
+        args.selection_target_detections,
+    )
 
     metadata = {
         "seed": args.seed,
@@ -402,7 +535,7 @@ def write_mock_data(args: argparse.Namespace) -> None:
     print(f"  observed survey  : {raw_path} ({observed.sum():,} galaxies retained)")
     print(f"  pixelated survey : {pixel_path} (nside={args.nside})")
     print(f"  GW posteriors    : {gw_path} ({args.nobs} events x {args.nsamp} samples)")
-    print(f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{args.ndraw:,} detected injections)")
+    print(f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{sel['Ndraw']:,} detected injections)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -413,12 +546,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nobs", type=int, default=8)
     parser.add_argument("--nsamp", type=int, default=512)
     parser.add_argument("--ndraw", type=int, default=80_000)
+    parser.add_argument(
+        "--selection-batch-size",
+        type=int,
+        default=100_000,
+        help="Maximum number of proposed GW-selection injections to draw in one JAX batch.",
+    )
+    selection_target = parser.add_mutually_exclusive_group()
+    selection_target.add_argument(
+        "--selection-target-detections",
+        type=int,
+        default=None,
+        help="Stop selection generation after this many detected injections, even if --ndraw has not been exhausted.",
+    )
+    selection_target.add_argument(
+        "--selection-per-observation-factor",
+        type=float,
+        default=None,
+        help="Stop selection generation after approximately this factor times --nobs detected injections.",
+    )
     parser.add_argument("--nside", type=int, default=16)
     parser.add_argument("--zmax", type=float, default=1.5)
     parser.add_argument("--H0", type=float, default=67.74)
     parser.add_argument("--Om0", type=float, default=0.3075)
     parser.add_argument("--snr-threshold", type=float, default=8.0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.selection_batch_size <= 0:
+        parser.error("--selection-batch-size must be positive")
+    if args.ndraw <= 0:
+        parser.error("--ndraw must be positive")
+    if args.selection_target_detections is not None and args.selection_target_detections <= 0:
+        parser.error("--selection-target-detections must be positive")
+    if args.selection_per_observation_factor is not None:
+        if args.selection_per_observation_factor <= 0:
+            parser.error("--selection-per-observation-factor must be positive")
+        args.selection_target_detections = max(1, int(np.ceil(args.selection_per_observation_factor * args.nobs)))
+    return args
 
 
 if __name__ == "__main__":
