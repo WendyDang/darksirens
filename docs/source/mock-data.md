@@ -87,7 +87,10 @@ By default the smoke-test script no longer sets a detected-injection stopping
 target, so it consumes `NDRAW` proposed selection injections.  If you need a
 fast cap for local debugging, set either `SELECTION_TARGET_DETECTIONS` or
 `SELECTION_PER_OBSERVATION_FACTOR`; those caps intentionally make `NDRAW` an
-upper bound rather than the exact number of proposals.
+upper bound rather than the exact number of proposals.  When `RUN_INFERENCE=1`
+and no explicit selection cap is provided, the script automatically sets
+`SELECTION_PER_OBSERVATION_FACTOR=500` so the sampler smoke test cannot
+accidentally compile a multi-million-injection likelihood.
 
 The smoke-test script pins common BLAS/OpenMP thread counts to one and disables
 JAX preallocation unless the caller has already set those environment variables.
@@ -96,4 +99,8 @@ common fork-after-JAX runtime deadlock when a library creates worker processes
 after JAX has initialized its thread pool.
 
 The optional inference run fixes the survey hyperparameters to the generated
-scenario via `--fixed_parameter_values`, including `log10n0 = -3`.
+scenario via `--fixed_parameter_values`, including `log10n0 = -3`.  It also
+passes `--sel_batch_size` (default `INFERENCE_SEL_BATCH_SIZE=256`) and caps
+Dynesty calls through `INFERENCE_MAX_SAMPLES` (default `2000`) to keep the
+smoke test bounded; override those environment variables for production-scale
+runs.

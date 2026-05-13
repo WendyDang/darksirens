@@ -101,6 +101,10 @@ def run_sampler(method, likelihood, prior_transform, labels,
         def dynesty_ptform(u):
             return np.asarray(prior_transform(jnp.asarray(u)))
 
+        maxcall = getattr(opts, "max_samples", None)
+        if maxcall is not None and maxcall <= 0:
+            maxcall = None
+
         print(f"[*] Asking Dynesty to find {opts.nlive} initial live points. This may take a minute...", flush=True)
         sampler = NestedSampler(
             dynesty_loglike, 
@@ -112,7 +116,13 @@ def run_sampler(method, likelihood, prior_transform, labels,
         )
         
         print(f"[*] Initial live points found! Starting main nested sampling loop...", flush=True)
-        sampler.run_nested(dlogz=opts.dlogz, print_progress=opts.show_progress)
+        if maxcall is not None:
+            print(f"[*] Dynesty call cap: maxcall={maxcall}", flush=True)
+        sampler.run_nested(
+            dlogz=opts.dlogz,
+            maxcall=maxcall,
+            print_progress=opts.show_progress,
+        )
         res = sampler.results
 
         # Weighted posterior samples
