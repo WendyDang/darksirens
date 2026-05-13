@@ -63,6 +63,7 @@ class SurveyConfig:
     absolute_mag_sigma: float = 1.0
     redshift_error_floor: float = 0.0005
     redshift_error_slope: float = 0.0015
+    delta: float = 0.0
 
 
 def _build_cosmology(h0: float, om0: float) -> FlatLambdaCDM:
@@ -254,29 +255,38 @@ def _draw_events_until_detected(
     return out
 
 
-def _posterior_samples(rng: np.random.Generator, truth: dict[str, np.ndarray], nsamp: int) -> dict[str, np.ndarray]:
+def _posterior_samples(
+    rng: np.random.Generator,
+    truth: dict[str, np.ndarray],
+    nsamp: int,
+    dL_fractional_uncertainty: float | None = None,
+    m1det_fractional_uncertainty: float = 0.08,
+    m2det_fractional_uncertainty: float = 0.10,
+    chieff_uncertainty: float = 0.08,
+    sky_uncertainty_deg: float | None = None,
+) -> dict[str, np.ndarray]:
     nobs = len(truth["z"])
     arrays = {"ra": [], "dec": [], "dL": [], "m1det": [], "m2det": [], "chieff": [], "p_pe": []}
     for i in range(nobs):
         rho = truth["snr"][i]
-        frac_dl = np.clip(1.8 / rho, 0.08, 0.35)
+        frac_dl = dL_fractional_uncertainty if dL_fractional_uncertainty is not None else np.clip(1.8 / rho, 0.08, 0.35)
         dl = rng.lognormal(np.log(truth["dl"][i]) - 0.5 * frac_dl**2, frac_dl, nsamp)
-        sigma_ang = np.deg2rad(np.clip(35.0 / rho, 1.0, 12.0))
+        sigma_ang = np.deg2rad(sky_uncertainty_deg if sky_uncertainty_deg is not None else np.clip(35.0 / rho, 1.0, 12.0))
         dra = rng.normal(0.0, sigma_ang / max(np.cos(truth["dec"][i]), 0.1), nsamp)
         ddec = rng.normal(0.0, sigma_ang, nsamp)
         arrays["ra"].append((truth["ra"][i] + dra) % (2.0 * np.pi))
         arrays["dec"].append(np.clip(truth["dec"][i] + ddec, -0.5 * np.pi, 0.5 * np.pi))
         m1det = truth["m1"][i] * (1.0 + truth["z"][i])
         m2det = truth["m2"][i] * (1.0 + truth["z"][i])
-        arrays["m1det"].append(np.clip(rng.normal(m1det, 0.08 * m1det, nsamp), 2.0, None))
-        arrays["m2det"].append(np.clip(rng.normal(m2det, 0.10 * m2det, nsamp), 1.0, None))
-        arrays["chieff"].append(np.clip(rng.normal(truth["chi"][i], 0.08, nsamp), -1.0, 1.0))
+        arrays["m1det"].append(np.clip(rng.normal(m1det, m1det_fractional_uncertainty * m1det, nsamp), 2.0, None))
+        arrays["m2det"].append(np.clip(rng.normal(m2det, m2det_fractional_uncertainty * m2det, nsamp), 1.0, None))
+        arrays["chieff"].append(np.clip(rng.normal(truth["chi"][i], chieff_uncertainty, nsamp), -1.0, 1.0))
         arrays["dL"].append(dl)
         arrays["p_pe"].append(np.ones(nsamp))
     return {k: np.concatenate(v) for k, v in arrays.items()}
 
 
-def _selection_injections(
+def _draw_selection_batch(
     rng: np.random.Generator,
     ndraw: int,
     grids: dict[str, np.ndarray],
@@ -293,7 +303,7 @@ def _selection_injections(
     snr = _network_snr(m1, m2, z, dl, rng)
     det = snr >= snr_threshold
 
-    pz = np.interp(z, grids["z"], grids["dvc_dz"]) / np.trapz(grids["dvc_dz"], grids["z"])
+    pz = np.interp(z, grids["z"], grids["dvc_dz"]) / np.trapezoid(grids["dvc_dz"], grids["z"])
     ddldz = np.gradient(grids["dl"], grids["z"])
     # Selection densities are consumed in the likelihood's canonical
     # coordinates (m1det, q, dL).  Since m1det = (1+z) m1src and
@@ -316,18 +326,72 @@ def _selection_injections(
     }
 
 
+def _selection_injections(
+    rng: np.random.Generator,
+    ndraw: int,
+    grids: dict[str, np.ndarray],
+    pop: PopulationConfig,
+    snr_threshold: float,
+    batch_size: int,
+    target_detections: int | None = None,
+    verbose: bool = False,
+) -> dict[str, np.ndarray | int]:
+    chunks: list[dict[str, np.ndarray | int]] = []
+    n_proposed = 0
+    n_detected = 0
+    keys = ["m1detsels", "m2detsels", "dLsels", "chieffsels", "rasels", "decsels", "p_draw"]
+
+    while n_proposed < ndraw:
+        n_batch = min(batch_size, ndraw - n_proposed)
+        chunk = _draw_selection_batch(rng, n_batch, grids, pop, snr_threshold)
+        chunks.append(chunk)
+        n_proposed += int(chunk["Ndraw"])
+        n_detected += int(chunk["n_detected"])
+        if verbose:
+            print(f"  selection batch: proposed={n_proposed:,}/{ndraw:,}, detected={n_detected:,}")
+        if target_detections is not None and n_detected >= target_detections:
+            break
+
+    if chunks:
+        arrays = {key: np.concatenate([chunk[key] for chunk in chunks]) for key in keys}
+    else:
+        arrays = {key: np.array([], dtype=float) for key in keys}
+
+    return {
+        **arrays,
+        "Ndraw": n_proposed,
+        "n_detected": n_detected,
+    }
+
+
+def _galaxy_count_from_density(n0: float, delta: float, grids: dict[str, np.ndarray]) -> int:
+    density_weighted_volume = np.trapezoid(grids["dvc_dz"] * (1.0 + grids["z"]) ** delta, grids["z"])
+    return max(1, int(round(n0 * density_weighted_volume)))
+
+
 def write_mock_data(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(args.seed)
     pop = PopulationConfig()
-    survey = SurveyConfig()
+    survey = SurveyConfig(
+        z50=args.survey_z50,
+        width=args.survey_width,
+        delta=args.galaxy_density_delta,
+    )
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
 
     cosmo = _build_cosmology(args.H0, args.Om0)
     zmax = float(args.zmax)
     grids = _cosmology_grids(cosmo, zmax)
+    n_galaxies = (
+        _galaxy_count_from_density(args.n0, args.galaxy_density_delta, grids)
+        if args.n0 is not None
+        else args.n_galaxies
+    )
+    if args.verbose and args.n0 is not None:
+        print(f"Derived {n_galaxies:,} galaxies from n0={args.n0:g} Mpc^-3 over z=[0, {zmax:g}].")
 
-    complete = _generate_complete_catalog(rng, args.n_galaxies, grids, survey)
+    complete = _generate_complete_catalog(rng, n_galaxies, grids, survey)
     observed = _apply_survey_selection(rng, complete, survey)
     zerr = survey.redshift_error_floor + survey.redshift_error_slope * (1.0 + complete["z"])
     weights = np.ones(observed.sum())
@@ -336,8 +400,32 @@ def write_mock_data(args: argparse.Namespace) -> None:
     )
 
     truth = _draw_events_until_detected(rng, args.nobs, complete, grids, pop, args.snr_threshold)
-    post = _posterior_samples(rng, truth, args.nsamp)
-    sel = _selection_injections(rng, args.ndraw, grids, pop, args.snr_threshold)
+    post = _posterior_samples(
+        rng,
+        truth,
+        args.nsamp,
+        dL_fractional_uncertainty=args.dL_fractional_uncertainty,
+        m1det_fractional_uncertainty=args.m1det_fractional_uncertainty,
+        m2det_fractional_uncertainty=args.m2det_fractional_uncertainty,
+        chieff_uncertainty=args.chieff_uncertainty,
+        sky_uncertainty_deg=args.sky_uncertainty_deg,
+    )
+    selection_target_detections = args.selection_target_detections
+    if args.selection_per_observation_factor is not None:
+        selection_target_detections = int(np.ceil(args.selection_per_observation_factor * args.nobs))
+    sel = _selection_injections(
+        rng,
+        args.ndraw,
+        grids,
+        pop,
+        args.snr_threshold,
+        args.selection_batch_size,
+        target_detections=selection_target_detections,
+        verbose=args.verbose,
+    )
+
+    inv_pdraw = 1.0 / np.asarray(sel["p_draw"])
+    selection_neff = float(inv_pdraw.sum() ** 2 / np.square(inv_pdraw).sum()) if len(inv_pdraw) else 0.0
 
     metadata = {
         "seed": args.seed,
@@ -392,33 +480,65 @@ def write_mock_data(args: argparse.Namespace) -> None:
     with h5py.File(sel_path, "w") as f:
         f.attrs["mock_data"] = True
         f.attrs["Ndraw"] = int(sel["Ndraw"])
+        f.attrs["Neff"] = selection_neff
         f.attrs["pop_model"] = "powerlaw+peak_shared_beta_spin"
         f.attrs["metadata_json"] = json.dumps(metadata)
         for key in ["m1detsels", "m2detsels", "dLsels", "chieffsels", "rasels", "decsels", "p_draw"]:
             f.create_dataset(key, data=sel[key], compression="gzip", shuffle=True)
 
     print("Mock dark-sirens data written:")
-    print(f"  complete catalog : {complete_path} ({args.n_galaxies:,} galaxies)")
+    print(f"  complete catalog : {complete_path} ({n_galaxies:,} galaxies)")
     print(f"  observed survey  : {raw_path} ({observed.sum():,} galaxies retained)")
     print(f"  pixelated survey : {pixel_path} (nside={args.nside})")
     print(f"  GW posteriors    : {gw_path} ({args.nobs} events x {args.nsamp} samples)")
-    print(f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{args.ndraw:,} detected injections)")
+    print(f"  GW selection     : {sel_path} ({sel['n_detected']:,}/{sel['Ndraw']:,} detected injections, Neff={selection_neff:.1f})")
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outdir", default="data/mock_dark_sirens", help="Output directory for HDF5 products.")
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--n-galaxies", type=int, default=50_000)
-    parser.add_argument("--nobs", type=int, default=8)
-    parser.add_argument("--nsamp", type=int, default=512)
-    parser.add_argument("--ndraw", type=int, default=80_000)
-    parser.add_argument("--nside", type=int, default=16)
-    parser.add_argument("--zmax", type=float, default=1.5)
-    parser.add_argument("--H0", type=float, default=67.74)
-    parser.add_argument("--Om0", type=float, default=0.3075)
-    parser.add_argument("--snr-threshold", type=float, default=8.0)
-    return parser.parse_args()
+    parser.add_argument("--n-galaxies", type=_positive_int, default=None, help="Number of complete-catalog galaxies to draw when --n0 is omitted.")
+    parser.add_argument("--n0", type=_positive_float, default=None, help="Comoving galaxy density in Mpc^-3; overrides --n-galaxies when provided.")
+    parser.add_argument("--nobs", type=_positive_int, default=8)
+    parser.add_argument("--nsamp", type=_positive_int, default=512)
+    parser.add_argument("--ndraw", type=_positive_int, default=80_000)
+    parser.add_argument("--nside", type=_positive_int, default=16)
+    parser.add_argument("--zmax", type=_positive_float, default=0.08)
+    parser.add_argument("--H0", type=_positive_float, default=67.74)
+    parser.add_argument("--Om0", type=_positive_float, default=0.3075)
+    parser.add_argument("--snr-threshold", type=_positive_float, default=8.0)
+    parser.add_argument("--survey-z50", type=float, default=SurveyConfig.z50)
+    parser.add_argument("--survey-width", type=_positive_float, default=SurveyConfig.width)
+    parser.add_argument("--galaxy-density-delta", type=float, default=SurveyConfig.delta)
+    parser.add_argument("--selection-batch-size", type=_positive_int, default=50_000)
+    selection_targets = parser.add_mutually_exclusive_group()
+    selection_targets.add_argument("--selection-target-detections", type=_positive_int, default=None)
+    selection_targets.add_argument("--selection-per-observation-factor", type=_positive_float, default=None)
+    parser.add_argument("--dL-fractional-uncertainty", type=_positive_float, default=None)
+    parser.add_argument("--m1det-fractional-uncertainty", type=_positive_float, default=0.08)
+    parser.add_argument("--m2det-fractional-uncertainty", type=_positive_float, default=0.10)
+    parser.add_argument("--chieff-uncertainty", type=_positive_float, default=0.08)
+    parser.add_argument("--sky-uncertainty-deg", type=_positive_float, default=None)
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+    if args.n0 is None and args.n_galaxies is None:
+        args.n0 = 1.0e-3
+    return args
 
 
 if __name__ == "__main__":
