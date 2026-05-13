@@ -8,6 +8,7 @@ set -eu
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 OUTDIR="${OUTDIR:-${ROOT_DIR}/data/mock_dark_sirens_test}"
 SEED="${SEED:-1234}"
+RUN_INFERENCE="${RUN_INFERENCE:-0}"
 
 # Keep smoke-test subprocesses deterministic on shared CPU machines and avoid
 # fork-after-JAX deadlocks when libraries create worker processes after JAX has
@@ -39,12 +40,28 @@ SELECTION_BATCH_SIZE="${SELECTION_BATCH_SIZE:-50000}"
 SELECTION_PER_OBSERVATION_FACTOR="${SELECTION_PER_OBSERVATION_FACTOR:-}"
 SELECTION_TARGET_DETECTIONS="${SELECTION_TARGET_DETECTIONS:-}"
 
+# Optional sampler smoke-test knobs.  The selection likelihood is batched by
+# default so even large generated selection files do not have to be materialized
+# as one XLA operation on GPU.  Dynesty is intentionally capped for a smoke test;
+# unset/override these variables for production runs.
+INFERENCE_NLIVE="${INFERENCE_NLIVE:-50}"
+INFERENCE_DLOGZ="${INFERENCE_DLOGZ:-1.0}"
+INFERENCE_MAX_SAMPLES="${INFERENCE_MAX_SAMPLES:-2000}"
+INFERENCE_SEL_BATCH_SIZE="${INFERENCE_SEL_BATCH_SIZE:-256}"
+
 # Fractional/absolute widths used to generate mock GW PE samples.
 DL_FRAC_UNCERTAINTY="${DL_FRAC_UNCERTAINTY:-0.20}"
 M1DET_FRAC_UNCERTAINTY="${M1DET_FRAC_UNCERTAINTY:-0.08}"
 M2DET_FRAC_UNCERTAINTY="${M2DET_FRAC_UNCERTAINTY:-0.10}"
 CHIEFF_UNCERTAINTY="${CHIEFF_UNCERTAINTY:-0.08}"
 SKY_UNCERTAINTY_DEG="${SKY_UNCERTAINTY_DEG:-5.0}"
+
+if [ "${RUN_INFERENCE}" = "1" ] && [ -z "${SELECTION_TARGET_DETECTIONS}" ] && [ -z "${SELECTION_PER_OBSERVATION_FACTOR}" ]; then
+  # Keep RUN_INFERENCE=1 smoke tests bounded.  This still leaves a generous
+  # detected-injection pool for the sampler while preventing accidental
+  # multi-million-injection likelihood compiles.
+  SELECTION_PER_OBSERVATION_FACTOR=500
+fi
 
 FIXED_SURVEY_JSON="${FIXED_SURVEY_JSON:-{\"log10n0\": ${LOG10N0}, \"z50\": ${SURVEY_Z50}, \"w\": ${SURVEY_WIDTH}, \"delta\": ${GALAXY_DENSITY_DELTA}, \"b_miss\": 1.0, \"alpha_miss\": 0.5}}"
 
@@ -68,7 +85,11 @@ Starting verbose mock data test.
   SELECTION_BATCH_SIZE=${SELECTION_BATCH_SIZE}
   SELECTION_PER_OBSERVATION_FACTOR=${SELECTION_PER_OBSERVATION_FACTOR:-<disabled>}
   SELECTION_TARGET_DETECTIONS=${SELECTION_TARGET_DETECTIONS:-<disabled>}
-  RUN_INFERENCE=${RUN_INFERENCE:-0}
+  RUN_INFERENCE=${RUN_INFERENCE}
+  INFERENCE_NLIVE=${INFERENCE_NLIVE}
+  INFERENCE_DLOGZ=${INFERENCE_DLOGZ}
+  INFERENCE_MAX_SAMPLES=${INFERENCE_MAX_SAMPLES}
+  INFERENCE_SEL_BATCH_SIZE=${INFERENCE_SEL_BATCH_SIZE}
 EOF
 
 selection_target_args=""
@@ -139,7 +160,7 @@ assert np.isfinite(np.asarray(data["p_draw"])).all(), "non-finite p_draw values"
 print("Ingestion smoke test passed.")
 PY
 
-if [ "${RUN_INFERENCE:-0}" = "1" ]; then
+if [ "${RUN_INFERENCE}" = "1" ]; then
   echo "Starting optional darksirens_inference sampler smoke test."
   python -m darksirens.tool.darksirens_inference \
     --gw_path "${OUTDIR}/mock_gw_events.h5" \
@@ -151,9 +172,10 @@ if [ "${RUN_INFERENCE:-0}" = "1" ]; then
     --fix_population True \
     --fix_survey True \
     --fixed_parameter_values "${FIXED_SURVEY_JSON}" \
-    --nlive 100 \
-    --dlogz 1.0 \
-    --max_samples 2000 \
+    --nlive "${INFERENCE_NLIVE}" \
+    --dlogz "${INFERENCE_DLOGZ}" \
+    --max_samples "${INFERENCE_MAX_SAMPLES}" \
+    --sel_batch_size "${INFERENCE_SEL_BATCH_SIZE}" \
     --seed "${SEED}" \
     --show_progress False \
     --save_path "${OUTDIR}/inference_smoke"
