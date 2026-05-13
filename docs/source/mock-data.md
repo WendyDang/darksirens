@@ -13,9 +13,14 @@ python scripts/mock_data/generate_mock_data.py --outdir data/mock_dark_sirens
 
 By default the generator uses a realistic local galaxy-density normalization,
 `--n0 1e-3` Mpc^-3, and a low-redshift generation range, `--zmax 0.08`, so the
-fixture remains lightweight.  The generated survey hyperparameters (`log10n0`,
-`z50`, `w`, and `delta`) are validated against the default inference prior
-bounds before any files are written.
+fixture remains lightweight.  When `--n0` is set, the complete-catalog galaxy
+count is derived from the full-sky comoving-volume range and
+`--galaxy-density-delta`; pass `--n-galaxies` without `--n0` to request an
+explicit catalog size instead.
+
+Survey completeness and density-evolution parameters can be overridden with
+`--survey-z50`, `--survey-width`, and `--galaxy-density-delta`; these are the
+values the smoke-test runner mirrors into the fixed inference survey JSON.
 
 Mock GW posterior widths can be controlled with fractional PE-uncertainty
 arguments, for example:
@@ -37,7 +42,9 @@ maximum number of proposed injections, and `--selection-batch-size` only control
 the chunk size used to reach that total.  Unless you explicitly pass
 `--selection-target-detections` or `--selection-per-observation-factor`, the
 generator exhausts all `--ndraw` proposals so changing `NDRAW` changes the
-selection sample.  The logs report a detected-injection proxy `Neff`, computed
+selection sample.  The two target options are mutually exclusive, and all batch
+size/count arguments must be positive.  The logs report a detected-injection
+proxy `Neff`, computed
 from inverse proposal-density weights, as a conservative health check; for
 production-like studies increase `--ndraw` until this proxy comfortably exceeds
 the inference reliability threshold (`5 * Nobs`) with margin.
