@@ -1,7 +1,7 @@
 # Mock data generation
 
-The repository includes a lightweight mock-data workflow for exercising the dark-sirens pipeline end to end.
-It is intended for testing data plumbing and sampler smoke tests, not for production-grade observing-scenario studies.
+The repository includes a configurable mock-data workflow for exercising the dark-sirens pipeline end to end.
+The defaults keep the ingestibility check tractable, while `RUN_INFERENCE=1` now runs an uncapped, production-style Dynesty configuration unless you explicitly request local-debug caps.
 
 ## Generator
 
@@ -20,7 +20,7 @@ explicit catalog size instead.
 
 Survey completeness and density-evolution parameters can be overridden with
 `--survey-z50`, `--survey-width`, and `--galaxy-density-delta`; these are the
-values the smoke-test runner mirrors into the fixed inference survey JSON.
+values the validation runner mirrors into the fixed inference survey JSON.
 
 Mock GW posterior widths can be controlled with fractional PE-uncertainty
 arguments, for example:
@@ -68,17 +68,17 @@ The simulation is intentionally simple:
 5. Apply a semi-analytic network-SNR threshold to decide GW detectability.
 6. Write posterior samples around detected truth values and detected injection samples with `p_draw` weights.
 
-## Smoke-test shell script
+## Validation shell script
 
-Run the default ingestibility smoke test with:
+Run the default ingestibility validation with:
 
 ```bash
 bash scripts/mock_data/run_mock_data_test.sh
 ```
 
-The script creates a small data set under `data/mock_dark_sirens_test` using `N0=1e-3` Mpc^-3 and calls `darksirens.inference.data.load_all_data` to verify that the generated HDF5 products are readable by the inference pipeline.
+The script creates a data set under `data/mock_dark_sirens_test` using `N0=1e-3` Mpc^-3 and calls `darksirens.inference.data.load_all_data` to verify that the generated HDF5 products are readable by the inference pipeline.
 
-To also launch a tiny optional sampler run, use:
+To also launch an optional production-style sampler run with free cosmology, use:
 
 ```bash
 RUN_INFERENCE=1 bash scripts/mock_data/run_mock_data_test.sh
@@ -90,24 +90,23 @@ You can override the mock size without editing the script, for example:
 NOBS=5 NSAMP=256 NDRAW=50000 NSIDE=16 bash scripts/mock_data/run_mock_data_test.sh
 ```
 
-By default the smoke-test script no longer sets a detected-injection stopping
-target, so it consumes `NDRAW` proposed selection injections.  If you need a
-fast cap for local debugging, set either `SELECTION_TARGET_DETECTIONS` or
-`SELECTION_PER_OBSERVATION_FACTOR`; those caps intentionally make `NDRAW` an
-upper bound rather than the exact number of proposals.  When `RUN_INFERENCE=1`
-and no explicit selection cap is provided, the script automatically sets
-`SELECTION_PER_OBSERVATION_FACTOR=500` so the sampler smoke test cannot
-accidentally compile a multi-million-injection likelihood.
+By default the validation script does not set a detected-injection stopping
+target, so it consumes `NDRAW` proposed selection injections even when
+`RUN_INFERENCE=1`.  If you need a fast cap for local debugging, set either
+`SELECTION_TARGET_DETECTIONS` or `SELECTION_PER_OBSERVATION_FACTOR`; those caps
+intentionally make `NDRAW` an upper bound rather than the exact number of
+proposals.
 
-The smoke-test script pins common BLAS/OpenMP thread counts to one and disables
+The validation script pins common BLAS/OpenMP thread counts to one and disables
 JAX preallocation unless the caller has already set those environment variables.
 This keeps the small fixture responsive on shared CPU machines and avoids the
 common fork-after-JAX runtime deadlock when a library creates worker processes
 after JAX has initialized its thread pool.
 
-The optional inference run fixes the survey hyperparameters to the generated
-scenario via `--fixed_parameter_values`, including `log10n0 = -3`.  It also
-passes `--sel_batch_size` (default `INFERENCE_SEL_BATCH_SIZE=256`) and caps
-Dynesty calls through `INFERENCE_MAX_SAMPLES` (default `2000`) to keep the
-smoke test bounded; override those environment variables for production-scale
-runs.
+The optional inference run fixes only the generated survey hyperparameters via
+`--fixed_parameter_values`, including `log10n0 = -3`, and explicitly leaves
+cosmology free (`--fix_cosmology False`) so both `H0` and `Om0` are sampled.  It
+passes `--sel_batch_size` (default `INFERENCE_SEL_BATCH_SIZE=256`) for memory
+safety, uses `INFERENCE_NLIVE=1000` and `INFERENCE_DLOGZ=0.1` by default, and
+does not cap Dynesty likelihood calls unless you set a positive
+`INFERENCE_MAX_SAMPLES` (the default `0` disables the cap).

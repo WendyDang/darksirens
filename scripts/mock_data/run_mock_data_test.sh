@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 # Generate a realistic low-redshift mock dark-sirens data set and verify that
 # the inference data loaders can ingest it. Set RUN_INFERENCE=1 to launch a
-# small dark-sirens sampler run using survey hyperparameters matched to the
-# generated catalog.
+# production-style dark-sirens sampler run using survey hyperparameters matched
+# to the generated catalog while leaving cosmology free.
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -10,7 +10,7 @@ OUTDIR="${OUTDIR:-${ROOT_DIR}/data/mock_dark_sirens_test}"
 SEED="${SEED:-1234}"
 RUN_INFERENCE="${RUN_INFERENCE:-0}"
 
-# Keep smoke-test subprocesses deterministic on shared CPU machines and avoid
+# Keep validation subprocesses deterministic on shared CPU machines and avoid
 # fork-after-JAX deadlocks when libraries create worker processes after JAX has
 # initialized its runtime. Users can still override these before invoking this
 # script.
@@ -40,13 +40,13 @@ SELECTION_BATCH_SIZE="${SELECTION_BATCH_SIZE:-50000}"
 SELECTION_PER_OBSERVATION_FACTOR="${SELECTION_PER_OBSERVATION_FACTOR:-}"
 SELECTION_TARGET_DETECTIONS="${SELECTION_TARGET_DETECTIONS:-}"
 
-# Optional sampler smoke-test knobs.  The selection likelihood is batched by
-# default so even large generated selection files do not have to be materialized
-# as one XLA operation on GPU.  Dynesty is intentionally capped for a smoke test;
-# unset/override these variables for production runs.
-INFERENCE_NLIVE="${INFERENCE_NLIVE:-50}"
-INFERENCE_DLOGZ="${INFERENCE_DLOGZ:-1.0}"
-INFERENCE_MAX_SAMPLES="${INFERENCE_MAX_SAMPLES:-2000}"
+# Optional sampler-run knobs.  The selection likelihood is batched by default
+# so even large generated selection files do not have to be materialized as one
+# XLA operation on GPU.  By default the sampler is not call-capped
+# (INFERENCE_MAX_SAMPLES=0); set a positive value only for local debugging.
+INFERENCE_NLIVE="${INFERENCE_NLIVE:-1000}"
+INFERENCE_DLOGZ="${INFERENCE_DLOGZ:-0.1}"
+INFERENCE_MAX_SAMPLES="${INFERENCE_MAX_SAMPLES:-0}"
 INFERENCE_SEL_BATCH_SIZE="${INFERENCE_SEL_BATCH_SIZE:-256}"
 
 # Fractional/absolute widths used to generate mock GW PE samples.
@@ -56,20 +56,13 @@ M2DET_FRAC_UNCERTAINTY="${M2DET_FRAC_UNCERTAINTY:-0.10}"
 CHIEFF_UNCERTAINTY="${CHIEFF_UNCERTAINTY:-0.08}"
 SKY_UNCERTAINTY_DEG="${SKY_UNCERTAINTY_DEG:-5.0}"
 
-if [ "${RUN_INFERENCE}" = "1" ] && [ -z "${SELECTION_TARGET_DETECTIONS}" ] && [ -z "${SELECTION_PER_OBSERVATION_FACTOR}" ]; then
-  # Keep RUN_INFERENCE=1 smoke tests bounded.  This still leaves a generous
-  # detected-injection pool for the sampler while preventing accidental
-  # multi-million-injection likelihood compiles.
-  SELECTION_PER_OBSERVATION_FACTOR=500
-fi
-
 FIXED_SURVEY_JSON="${FIXED_SURVEY_JSON:-{\"log10n0\": ${LOG10N0}, \"z50\": ${SURVEY_Z50}, \"w\": ${SURVEY_WIDTH}, \"delta\": ${GALAXY_DENSITY_DELTA}, \"b_miss\": 1.0, \"alpha_miss\": 0.5}}"
 
 cd "${ROOT_DIR}"
 mkdir -p "${OUTDIR}"
 
 cat <<EOF
-Starting verbose mock data test.
+Starting verbose mock data validation.
   ROOT_DIR=${ROOT_DIR}
   OUTDIR=${OUTDIR}
   SEED=${SEED}
@@ -122,7 +115,7 @@ python scripts/mock_data/generate_mock_data.py \
   --verbose
 
 export OUTDIR NSIDE NOBS NSAMP
-echo "Starting verbose ingestion smoke test for generated products."
+echo "Starting verbose ingestion validation for generated products."
 python - <<'PY'
 from argparse import Namespace
 from pathlib import Path
@@ -157,11 +150,11 @@ assert int(data["nsamp"]) == nsamp, data["nsamp"]
 assert int(data["nside"]) == nside, data["nside"]
 assert len(data["p_draw"]) > 5 * nobs, "too few detected selection samples"
 assert np.isfinite(np.asarray(data["p_draw"])).all(), "non-finite p_draw values"
-print("Ingestion smoke test passed.")
+print("Ingestion validation passed.")
 PY
 
 if [ "${RUN_INFERENCE}" = "1" ]; then
-  echo "Starting optional darksirens_inference sampler smoke test."
+  echo "Starting optional darksirens_inference sampler run."
   python -m darksirens.tool.darksirens_inference \
     --gw_path "${OUTDIR}/mock_gw_events.h5" \
     --gwselection_path "${OUTDIR}/mock_gw_selection.h5" \
@@ -170,6 +163,7 @@ if [ "${RUN_INFERENCE}" = "1" ]; then
     --pop_model powerlaw+peak_shared_beta_spin \
     --universe_model dark_sirens \
     --fix_population True \
+    --fix_cosmology False \
     --fix_survey True \
     --fixed_parameter_values "${FIXED_SURVEY_JSON}" \
     --nlive "${INFERENCE_NLIVE}" \
@@ -178,12 +172,12 @@ if [ "${RUN_INFERENCE}" = "1" ]; then
     --sel_batch_size "${INFERENCE_SEL_BATCH_SIZE}" \
     --seed "${SEED}" \
     --show_progress False \
-    --save_path "${OUTDIR}/inference_smoke"
+    --save_path "${OUTDIR}/inference_realistic"
 fi
 
 cat <<EOF
-Mock data test complete.
+Mock data validation complete.
 Products are in: ${OUTDIR}
 Generated survey density N0=${N0} Mpc^-3 and zmax=${ZMAX}; fixed inference survey JSON: ${FIXED_SURVEY_JSON}
-Set RUN_INFERENCE=1 to run the optional darksirens_inference sampler smoke test.
+Set RUN_INFERENCE=1 to run the optional darksirens_inference sampler with free H0 and Om0.
 EOF
